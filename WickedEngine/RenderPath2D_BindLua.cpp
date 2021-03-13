@@ -22,9 +22,6 @@ Luna<RenderPath2D_BindLua>::FunctionType RenderPath2D_BindLua::methods[] = {
 	lunamethod(RenderPath2D_BindLua, SetLayerOrder),
 	lunamethod(RenderPath2D_BindLua, SetSpriteOrder),
 	lunamethod(RenderPath2D_BindLua, SetFontOrder),
-	lunamethod(RenderPath2D_BindLua, Initialize),
-	lunamethod(RenderPath_BindLua, OnStart),
-	lunamethod(RenderPath_BindLua, OnStop),
 	lunamethod(RenderPath_BindLua, GetLayerMask),
 	lunamethod(RenderPath_BindLua, SetLayerMask),
 	{ NULL, NULL }
@@ -423,6 +420,6 @@ void RenderPath2D_BindLua::Bind()
 	if (!initialized)
 	{
 		initialized = true;
-		Luna<RenderPath2D_BindLua>::Register(wiLua::GetGlobal()->GetLuaState());
+		Luna<RenderPath2D_BindLua>::Register(wiLua::GetLuaState());
 	}
 }

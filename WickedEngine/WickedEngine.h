@@ -12,10 +12,6 @@
 #include "RenderPath.h"
 #include "RenderPath2D.h"
 #include "RenderPath3D.h"
-#include "RenderPath3D_Forward.h"
-#include "RenderPath3D_Deferred.h"
-#include "RenderPath3D_TiledForward.h"
-#include "RenderPath3D_TiledDeferred.h"
 #include "RenderPath3D_PathTracing.h"
 #include "LoadingScreen.h"
 #include "MainComponent.h"
@@ -62,6 +58,7 @@
 #include "wiGPUSortLib.h"
 #include "wiJobSystem.h"
 #include "wiNetwork.h"
+#include "wiEvent.h"
 
 #ifdef _WIN32
 #ifdef PLATFORM_UWP

@@ -1,47 +1,37 @@
 #pragma once
-#include "CommonInclude.h"
-
-class wiGUI;
-class wiWindow;
-class wiLabel;
-class wiCheckBox;
-class wiSlider;
-class wiComboBox;
-class wiColorPicker;
-class wiButton;
+#include "WickedEngine.h"
 
 class EditorComponent;
 
-class PaintToolWindow
+class PaintToolWindow : public wiWindow
 {
 	float rot = 0;
 	float stroke_dist = 0;
 	bool history_needs_recording_start = false;
 	bool history_needs_recording_end = false;
 	size_t history_textureIndex = 0;
-	std::vector<std::shared_ptr<wiResource>> history_textures; // we'd like to keep history tetures in GPU memory to avoid GPU readback
-	std::shared_ptr<wiResource> GetEditTextureSlot(const wiScene::MaterialComponent& material, int* uvset = nullptr);
-	void ReplaceEditTextureSlot(wiScene::MaterialComponent& material, std::shared_ptr<wiResource> resource);
+	std::vector<wiGraphics::Texture> history_textures; // we'd like to keep history textures in GPU memory to avoid GPU readback
+	wiGraphics::Texture GetEditTextureSlot(const wiScene::MaterialComponent& material, int* uvset = nullptr);
+	void ReplaceEditTextureSlot(wiScene::MaterialComponent& material, const wiGraphics::Texture& texture);
 public:
-	PaintToolWindow(EditorComponent* editor);
-	~PaintToolWindow();
+	void Create(EditorComponent* editor);
 
 	EditorComponent* editor = nullptr;
 	wiECS::Entity entity = wiECS::INVALID_ENTITY;
 	int subset = -1;
 
-	wiWindow* window;
-	wiComboBox* modeComboBox;
-	wiLabel* infoLabel;
-	wiSlider* radiusSlider;
-	wiSlider* amountSlider;
-	wiSlider* falloffSlider;
-	wiSlider* spacingSlider;
-	wiCheckBox* backfaceCheckBox;
-	wiCheckBox* wireCheckBox;
-	wiColorPicker* colorPicker;
-	wiComboBox* textureSlotComboBox;
-	wiButton* saveTextureButton;
+	wiComboBox modeComboBox;
+	wiLabel infoLabel;
+	wiSlider radiusSlider;
+	wiSlider amountSlider;
+	wiSlider falloffSlider;
+	wiSlider spacingSlider;
+	wiCheckBox backfaceCheckBox;
+	wiCheckBox wireCheckBox;
+	wiCheckBox pressureCheckBox;
+	wiColorPicker colorPicker;
+	wiComboBox textureSlotComboBox;
+	wiButton saveTextureButton;
 
 	void Update(float dt);
 	void DrawBrush() const;

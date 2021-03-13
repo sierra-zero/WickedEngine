@@ -21,6 +21,11 @@ int CreateEntity_BindLua(lua_State* L)
 	return 1;
 }
 
+int GetCamera(lua_State* L)
+{
+	Luna<CameraComponent_BindLua>::push(L, new CameraComponent_BindLua(&wiScene::GetCamera()));
+	return 1;
+}
 int GetScene(lua_State* L)
 {
 	Luna<Scene_BindLua>::push(L, new Scene_BindLua(&wiScene::GetScene()));
@@ -38,6 +43,7 @@ int LoadModel(lua_State* L)
 			if (argc > 1)
 			{
 				string fileName = wiLua::SGetString(L, 2);
+				fileName = wiLua::GetScriptPath() + fileName;
 				XMMATRIX transform = XMMatrixIdentity();
 				if (argc > 2)
 				{
@@ -65,6 +71,7 @@ int LoadModel(lua_State* L)
 		{
 			// Overload 2: global scene version
 			string fileName = wiLua::SGetString(L, 1);
+			fileName = wiLua::GetScriptPath() + fileName;
 			XMMATRIX transform = XMMatrixIdentity();
 			if (argc > 1)
 			{
@@ -122,7 +129,7 @@ int Pick(lua_State* L)
 					}
 				}
 			}
-			auto& pick = wiScene::Pick(ray->ray, renderTypeMask, layerMask, *scene);
+			auto pick = wiScene::Pick(ray->ray, renderTypeMask, layerMask, *scene);
 			wiLua::SSetLongLong(L, pick.entity);
 			Luna<Vector_BindLua>::push(L, new Vector_BindLua(XMLoadFloat3(&pick.position)));
 			Luna<Vector_BindLua>::push(L, new Vector_BindLua(XMLoadFloat3(&pick.normal)));
@@ -172,7 +179,7 @@ int SceneIntersectSphere(lua_State* L)
 					}
 				}
 			}
-			auto& pick = wiScene::SceneIntersectSphere(sphere->sphere, renderTypeMask, layerMask, *scene);
+			auto pick = wiScene::SceneIntersectSphere(sphere->sphere, renderTypeMask, layerMask, *scene);
 			wiLua::SSetLongLong(L, pick.entity);
 			Luna<Vector_BindLua>::push(L, new Vector_BindLua(XMLoadFloat3(&pick.position)));
 			Luna<Vector_BindLua>::push(L, new Vector_BindLua(XMLoadFloat3(&pick.normal)));
@@ -222,7 +229,7 @@ int SceneIntersectCapsule(lua_State* L)
 					}
 				}
 			}
-			auto& pick = wiScene::SceneIntersectCapsule(capsule->capsule, renderTypeMask, layerMask, *scene);
+			auto pick = wiScene::SceneIntersectCapsule(capsule->capsule, renderTypeMask, layerMask, *scene);
 			wiLua::SSetLongLong(L, pick.entity);
 			Luna<Vector_BindLua>::push(L, new Vector_BindLua(XMLoadFloat3(&pick.position)));
 			Luna<Vector_BindLua>::push(L, new Vector_BindLua(XMLoadFloat3(&pick.normal)));
@@ -247,29 +254,31 @@ void Bind()
 	{
 		initialized = true;
 
-		lua_State* L = wiLua::GetGlobal()->GetLuaState();
+		lua_State* L = wiLua::GetLuaState();
 
-		wiLua::GetGlobal()->RegisterFunc("CreateEntity", CreateEntity_BindLua);
-		wiLua::GetGlobal()->RunText("INVALID_ENTITY = 0");
+		wiLua::RegisterFunc("CreateEntity", CreateEntity_BindLua);
+		wiLua::RunText("INVALID_ENTITY = 0");
 
-		wiLua::GetGlobal()->RunText("DIRECTIONAL = 0");
-		wiLua::GetGlobal()->RunText("POINT = 1");
-		wiLua::GetGlobal()->RunText("SPOT = 2");
-		wiLua::GetGlobal()->RunText("SPHERE = 3");
-		wiLua::GetGlobal()->RunText("DISC = 4");
-		wiLua::GetGlobal()->RunText("RECTANGLE = 5");
-		wiLua::GetGlobal()->RunText("TUBE = 6");
+		wiLua::RunText("DIRECTIONAL = 0");
+		wiLua::RunText("POINT = 1");
+		wiLua::RunText("SPOT = 2");
+		wiLua::RunText("SPHERE = 3");
+		wiLua::RunText("DISC = 4");
+		wiLua::RunText("RECTANGLE = 5");
+		wiLua::RunText("TUBE = 6");
 
-		wiLua::GetGlobal()->RunText("STENCILREF_EMPTY = 0");
-		wiLua::GetGlobal()->RunText("STENCILREF_SKY = 1");
-		wiLua::GetGlobal()->RunText("STENCILREF_DEFAULT = 2");
-		wiLua::GetGlobal()->RunText("STENCILREF_SKIN = 3");
+		wiLua::RunText("STENCILREF_EMPTY = 0");
+		wiLua::RunText("STENCILREF_DEFAULT = 1");
+		wiLua::RunText("STENCILREF_CUSTOMSHADER = 2");
+		wiLua::RunText("STENCILREF_SKIN = 3");
+		wiLua::RunText("STENCILREF_SNOW = 4");
 
-		wiLua::GetGlobal()->RegisterFunc("GetScene", GetScene);
-		wiLua::GetGlobal()->RegisterFunc("LoadModel", LoadModel);
-		wiLua::GetGlobal()->RegisterFunc("Pick", Pick);
-		wiLua::GetGlobal()->RegisterFunc("SceneIntersectSphere", SceneIntersectSphere);
-		wiLua::GetGlobal()->RegisterFunc("SceneIntersectCapsule", SceneIntersectCapsule);
+		wiLua::RegisterFunc("GetCamera", GetCamera);
+		wiLua::RegisterFunc("GetScene", GetScene);
+		wiLua::RegisterFunc("LoadModel", LoadModel);
+		wiLua::RegisterFunc("Pick", Pick);
+		wiLua::RegisterFunc("SceneIntersectSphere", SceneIntersectSphere);
+		wiLua::RegisterFunc("SceneIntersectCapsule", SceneIntersectCapsule);
 
 		Luna<Scene_BindLua>::Register(L);
 		Luna<NameComponent_BindLua>::Register(L);
@@ -349,19 +358,6 @@ Luna<Scene_BindLua>::FunctionType Scene_BindLua::methods[] = {
 Luna<Scene_BindLua>::PropertyType Scene_BindLua::properties[] = {
 	{ NULL, NULL }
 };
-
-Scene_BindLua::Scene_BindLua(lua_State *L)
-{
-	owning = true;
-	scene = new Scene;
-}
-Scene_BindLua::~Scene_BindLua()
-{
-	if (owning)
-	{
-		delete scene;
-	}
-}
 
 
 int Scene_BindLua::Update(lua_State* L)

@@ -12,7 +12,7 @@ private:
 	bool dragStarted = false;
 	bool dragEnded = false;
 public:
-	Translator();
+	void Create();
 
 	void Update();
 	void Draw(const wiScene::CameraComponent& camera, wiGraphics::CommandList cmd) const;
@@ -50,7 +50,5 @@ public:
 	bool IsDragEnded() const { return dragEnded; };
 	// Delta matrix from beginning to end of drag operation
 	XMFLOAT4X4 GetDragDeltaMatrix() const { return dragDeltaMatrix; }
-
-	static void LoadShaders();
 };
 

@@ -1,14 +1,21 @@
 #include "wiGraphicsDevice_DX11.h"
+
+#ifdef WICKEDENGINE_BUILD_DX11
+
 #include "wiHelper.h"
 #include "ResourceMapping.h"
 #include "wiBackLog.h"
 
-#pragma comment(lib,"d3d11.lib")
-#pragma comment(lib,"Dxgi.lib")
 #pragma comment(lib,"dxguid.lib")
 
 #include <sstream>
 #include <algorithm>
+
+// These will let the driver select the dedicated GPU in favour of the integrated one:
+extern "C" {
+	_declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+	_declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
 
 using namespace Microsoft::WRL;
 
@@ -17,6 +24,14 @@ namespace wiGraphics
 
 namespace DX11_Internal
 {
+
+#ifdef PLATFORM_UWP
+	// UWP will use static link + /DELAYLOAD linker feature for the dlls (optionally)
+#pragma comment(lib,"d3d11.lib")
+#else
+	static PFN_D3D11_CREATE_DEVICE D3D11CreateDevice = nullptr;
+#endif // PLATFORM_UWP
+
 	// Engine -> Native converters
 
 	constexpr uint32_t _ParseBindFlags(uint32_t value)
@@ -1091,13 +1106,10 @@ namespace DX11_Internal
 		std::vector<ComPtr<ID3D11RenderTargetView>> subresources_rtv;
 		std::vector<ComPtr<ID3D11DepthStencilView>> subresources_dsv;
 	};
-	struct InputLayout_DX11
-	{
-		ComPtr<ID3D11InputLayout> resource;
-	};
 	struct VertexShader_DX11
 	{
 		ComPtr<ID3D11VertexShader> resource;
+		std::vector<uint8_t> shadercode;
 	};
 	struct HullShader_DX11
 	{
@@ -1119,25 +1131,20 @@ namespace DX11_Internal
 	{
 		ComPtr<ID3D11ComputeShader> resource;
 	};
-	struct BlendState_DX11
+	struct PipelineState_DX11
 	{
-		ComPtr<ID3D11BlendState> resource;
-	};
-	struct DepthStencilState_DX11
-	{
-		ComPtr<ID3D11DepthStencilState> resource;
-	};
-	struct RasterizerState_DX11
-	{
-		ComPtr<ID3D11RasterizerState> resource;
+		ComPtr<ID3D11BlendState> bs;
+		ComPtr<ID3D11DepthStencilState> dss;
+		ComPtr<ID3D11RasterizerState> rs;
+		ComPtr<ID3D11InputLayout> il;
 	};
 	struct Sampler_DX11
 	{
 		ComPtr<ID3D11SamplerState> resource;
 	};
-	struct Query_DX11
+	struct QueryHeap_DX11
 	{
-		ComPtr<ID3D11Query> resource;
+		std::vector<ComPtr<ID3D11Query>> resources;
 	};
 
 	Resource_DX11* to_internal(const GPUResource* param)
@@ -1152,33 +1159,171 @@ namespace DX11_Internal
 	{
 		return static_cast<Texture_DX11*>(param->internal_state.get());
 	}
-	InputLayout_DX11* to_internal(const InputLayout* param)
+	PipelineState_DX11* to_internal(const PipelineState* param)
 	{
-		return static_cast<InputLayout_DX11*>(param->internal_state.get());
-	}
-	BlendState_DX11* to_internal(const BlendState* param)
-	{
-		return static_cast<BlendState_DX11*>(param->internal_state.get());
-	}
-	DepthStencilState_DX11* to_internal(const DepthStencilState* param)
-	{
-		return static_cast<DepthStencilState_DX11*>(param->internal_state.get());
-	}
-	RasterizerState_DX11* to_internal(const RasterizerState* param)
-	{
-		return static_cast<RasterizerState_DX11*>(param->internal_state.get());
+		return static_cast<PipelineState_DX11*>(param->internal_state.get());
 	}
 	Sampler_DX11* to_internal(const Sampler* param)
 	{
 		return static_cast<Sampler_DX11*>(param->internal_state.get());
 	}
-	Query_DX11* to_internal(const GPUQuery* param)
+	QueryHeap_DX11* to_internal(const GPUQueryHeap* param)
 	{
-		return static_cast<Query_DX11*>(param->internal_state.get());
+		return static_cast<QueryHeap_DX11*>(param->internal_state.get());
 	}
 }
 using namespace DX11_Internal;
 
+void GraphicsDevice_DX11::pso_validate(CommandList cmd)
+{
+	if (!dirty_pso[cmd])
+		return;
+
+	const PipelineState* pso = active_pso[cmd];
+	const PipelineStateDesc& desc = pso != nullptr ? pso->GetDesc() : PipelineStateDesc();
+
+	auto internal_state = to_internal(pso);
+
+	ID3D11VertexShader* vs = desc.vs == nullptr ? nullptr : static_cast<VertexShader_DX11*>(desc.vs->internal_state.get())->resource.Get();
+	if (vs != prev_vs[cmd])
+	{
+		deviceContexts[cmd]->VSSetShader(vs, nullptr, 0);
+		prev_vs[cmd] = vs;
+
+		if (desc.vs != nullptr)
+		{
+			for (auto& x : desc.vs->auto_samplers)
+			{
+				BindSampler(VS, &x.sampler, x.slot, cmd);
+			}
+		}
+	}
+	ID3D11PixelShader* ps = desc.ps == nullptr ? nullptr : static_cast<PixelShader_DX11*>(desc.ps->internal_state.get())->resource.Get();
+	if (ps != prev_ps[cmd])
+	{
+		deviceContexts[cmd]->PSSetShader(ps, nullptr, 0);
+		prev_ps[cmd] = ps;
+
+		if (desc.ps != nullptr)
+		{
+			for (auto& x : desc.ps->auto_samplers)
+			{
+				BindSampler(PS, &x.sampler, x.slot, cmd);
+			}
+		}
+	}
+	ID3D11HullShader* hs = desc.hs == nullptr ? nullptr : static_cast<HullShader_DX11*>(desc.hs->internal_state.get())->resource.Get();
+	if (hs != prev_hs[cmd])
+	{
+		deviceContexts[cmd]->HSSetShader(hs, nullptr, 0);
+		prev_hs[cmd] = hs;
+
+		if (desc.hs != nullptr)
+		{
+			for (auto& x : desc.hs->auto_samplers)
+			{
+				BindSampler(HS, &x.sampler, x.slot, cmd);
+			}
+		}
+	}
+	ID3D11DomainShader* ds = desc.ds == nullptr ? nullptr : static_cast<DomainShader_DX11*>(desc.ds->internal_state.get())->resource.Get();
+	if (ds != prev_ds[cmd])
+	{
+		deviceContexts[cmd]->DSSetShader(ds, nullptr, 0);
+		prev_ds[cmd] = ds;
+
+		if (desc.ds != nullptr)
+		{
+			for (auto& x : desc.ds->auto_samplers)
+			{
+				BindSampler(DS, &x.sampler, x.slot, cmd);
+			}
+		}
+	}
+	ID3D11GeometryShader* gs = desc.gs == nullptr ? nullptr : static_cast<GeometryShader_DX11*>(desc.gs->internal_state.get())->resource.Get();
+	if (gs != prev_gs[cmd])
+	{
+		deviceContexts[cmd]->GSSetShader(gs, nullptr, 0);
+		prev_gs[cmd] = gs;
+
+		if (desc.gs != nullptr)
+		{
+			for (auto& x : desc.gs->auto_samplers)
+			{
+				BindSampler(GS, &x.sampler, x.slot, cmd);
+			}
+		}
+	}
+
+	ID3D11BlendState* bs = desc.bs == nullptr ? nullptr : internal_state->bs.Get();
+	if (desc.bs != prev_bs[cmd] || desc.sampleMask != prev_samplemask[cmd] ||
+		blendFactor[cmd].x != prev_blendfactor[cmd].x ||
+		blendFactor[cmd].y != prev_blendfactor[cmd].y ||
+		blendFactor[cmd].z != prev_blendfactor[cmd].z ||
+		blendFactor[cmd].w != prev_blendfactor[cmd].w
+		)
+	{
+		const float fact[4] = { blendFactor[cmd].x, blendFactor[cmd].y, blendFactor[cmd].z, blendFactor[cmd].w };
+		deviceContexts[cmd]->OMSetBlendState(bs, fact, desc.sampleMask);
+		prev_bs[cmd] = desc.bs;
+		prev_blendfactor[cmd] = blendFactor[cmd];
+		prev_samplemask[cmd] = desc.sampleMask;
+	}
+
+	ID3D11RasterizerState* rs = desc.rs == nullptr ? nullptr : internal_state->rs.Get();
+	if (desc.rs != prev_rs[cmd])
+	{
+		deviceContexts[cmd]->RSSetState(rs);
+		prev_rs[cmd] = desc.rs;
+	}
+
+	ID3D11DepthStencilState* dss = desc.dss == nullptr ? nullptr : internal_state->dss.Get();
+	if (desc.dss != prev_dss[cmd] || stencilRef[cmd] != prev_stencilRef[cmd])
+	{
+		deviceContexts[cmd]->OMSetDepthStencilState(dss, stencilRef[cmd]);
+		prev_dss[cmd] = desc.dss;
+		prev_stencilRef[cmd] = stencilRef[cmd];
+	}
+
+	ID3D11InputLayout* il = desc.il == nullptr ? nullptr : internal_state->il.Get();
+	if (desc.il != prev_il[cmd])
+	{
+		deviceContexts[cmd]->IASetInputLayout(il);
+		prev_il[cmd] = desc.il;
+	}
+
+	if (prev_pt[cmd] != desc.pt)
+	{
+		D3D11_PRIMITIVE_TOPOLOGY d3dType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+		switch (desc.pt)
+		{
+		case TRIANGLELIST:
+			d3dType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+			break;
+		case TRIANGLESTRIP:
+			d3dType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+			break;
+		case POINTLIST:
+			d3dType = D3D11_PRIMITIVE_TOPOLOGY_POINTLIST;
+			break;
+		case LINELIST:
+			d3dType = D3D11_PRIMITIVE_TOPOLOGY_LINELIST;
+			break;
+		case LINESTRIP:
+			d3dType = D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP;
+			break;
+		case PATCHLIST:
+			d3dType = D3D11_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
+			break;
+		default:
+			d3dType = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+			break;
+		};
+		deviceContexts[cmd]->IASetPrimitiveTopology(d3dType);
+
+		prev_pt[cmd] = desc.pt;
+	}
+}
 
 // Engine functions
 GraphicsDevice_DX11::GraphicsDevice_DX11(wiPlatform::window_type window, bool fullscreen, bool debuglayer)
@@ -1187,23 +1332,27 @@ GraphicsDevice_DX11::GraphicsDevice_DX11(wiPlatform::window_type window, bool fu
 	FULLSCREEN = fullscreen;
 
 #ifndef PLATFORM_UWP
-	RECT rect = RECT();
+	dpi = GetDpiForWindow(window);
+	RECT rect;
 	GetClientRect(window, &rect);
 	RESOLUTIONWIDTH = rect.right - rect.left;
 	RESOLUTIONHEIGHT = rect.bottom - rect.top;
 #else PLATFORM_UWP
-	float dpiscale = wiPlatform::GetDPIScaling();
-	RESOLUTIONWIDTH = int(window->Bounds.Width * dpiscale);
-	RESOLUTIONHEIGHT = int(window->Bounds.Height * dpiscale);
+	dpi = (int)winrt::Windows::Graphics::Display::DisplayInformation::GetForCurrentView().LogicalDpi();
+	float dpiscale = GetDPIScaling();
+	RESOLUTIONWIDTH = int(window.Bounds().Width * dpiscale);
+	RESOLUTIONHEIGHT = int(window.Bounds().Height * dpiscale);
 #endif
 
-	HRESULT hr = E_FAIL;
 
-	for (int i = 0; i < COMMANDLIST_COUNT; i++)
-	{
-		stencilRef[i] = 0;
-		blendFactor[i] = XMFLOAT4(1, 1, 1, 1);
-	}
+#ifndef PLATFORM_UWP
+	HMODULE dx11 = LoadLibraryEx(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+
+	D3D11CreateDevice = (PFN_D3D11_CREATE_DEVICE)GetProcAddress(dx11, "D3D11CreateDevice");
+	assert(D3D11CreateDevice != nullptr);
+#endif // PLATFORM_UWP
+
+	HRESULT hr = E_FAIL;
 
 	uint32_t createDeviceFlags = 0;
 
@@ -1253,21 +1402,48 @@ GraphicsDevice_DX11::GraphicsDevice_DX11(wiPlatform::window_type window, bool fu
 	ComPtr<IDXGIFactory2> pIDXGIFactory;
 	pDXGIAdapter->GetParent(__uuidof(IDXGIFactory2), (void**)&pIDXGIFactory);
 
+	if (debuglayer)
+	{
+		ID3D11Debug* d3dDebug = nullptr;
+		if (SUCCEEDED(device->QueryInterface(__uuidof(ID3D11Debug), (void**)&d3dDebug)))
+		{
+			ID3D11InfoQueue* d3dInfoQueue = nullptr;
+			if (SUCCEEDED(d3dDebug->QueryInterface(__uuidof(ID3D11InfoQueue), (void**)&d3dInfoQueue)))
+			{
+				d3dInfoQueue->SetBreakOnSeverity(D3D11_MESSAGE_SEVERITY_CORRUPTION, true);
+				d3dInfoQueue->SetBreakOnSeverity(D3D11_MESSAGE_SEVERITY_ERROR, true);
 
-	DXGI_SWAP_CHAIN_DESC1 sd = { 0 };
+				D3D11_MESSAGE_ID hide[] =
+				{
+					D3D11_MESSAGE_ID_SETPRIVATEDATA_CHANGINGPARAMS,
+					// Add more message IDs here as needed
+				};
+
+				D3D11_INFO_QUEUE_FILTER filter = {};
+				filter.DenyList.NumIDs = _countof(hide);
+				filter.DenyList.pIDList = hide;
+				d3dInfoQueue->AddStorageFilterEntries(&filter);
+				d3dInfoQueue->Release();
+			}
+			d3dDebug->Release();
+		}
+	}
+
+
+	DXGI_SWAP_CHAIN_DESC1 sd = {};
 	sd.Width = RESOLUTIONWIDTH;
 	sd.Height = RESOLUTIONHEIGHT;
 	sd.Format = _ConvertFormat(GetBackBufferFormat());
 	sd.Stereo = false;
-	sd.SampleDesc.Count = 1; // Don't use multi-sampling.
+	sd.SampleDesc.Count = 1;
 	sd.SampleDesc.Quality = 0;
 	sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-	sd.BufferCount = 2; // Use double-buffering to minimize latency.
+	sd.BufferCount = BACKBUFFER_COUNT;
 	sd.Flags = 0;
 	sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+	sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
 #ifndef PLATFORM_UWP
-	sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
 	sd.Scaling = DXGI_SCALING_STRETCH;
 
 	DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreenDesc;
@@ -1278,10 +1454,9 @@ GraphicsDevice_DX11::GraphicsDevice_DX11(wiPlatform::window_type window, bool fu
 	fullscreenDesc.Windowed = !fullscreen;
 	hr = pIDXGIFactory->CreateSwapChainForHwnd(device.Get(), window, &sd, &fullscreenDesc, nullptr, &swapChain);
 #else
-	sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL; // All Windows Store apps must use this SwapEffect.
 	sd.Scaling = DXGI_SCALING_ASPECT_RATIO_STRETCH;
 
-	hr = pIDXGIFactory->CreateSwapChainForCoreWindow(device.Get(), reinterpret_cast<IUnknown*>(window.Get()), &sd, nullptr, &swapChain);
+	hr = pIDXGIFactory->CreateSwapChainForCoreWindow(device.Get(), static_cast<IUnknown*>(winrt::get_abi(window)), &sd, nullptr, &swapChain);
 #endif
 
 	if (FAILED(hr))
@@ -1294,9 +1469,19 @@ GraphicsDevice_DX11::GraphicsDevice_DX11(wiPlatform::window_type window, bool fu
 	// ensures that the application will only render after each VSync, minimizing power consumption.
 	hr = pDXGIDevice->SetMaximumFrameLatency(1);
 
+	D3D11_QUERY_DESC queryDesc = {};
+	queryDesc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+	for (auto& x : disjointQueries)
+	{
+		hr = device->CreateQuery(&queryDesc, &x);
+		assert(SUCCEEDED(hr));
+	}
 
 	D3D_FEATURE_LEVEL aquiredFeatureLevel = device->GetFeatureLevel();
-	TESSELLATION = ((aquiredFeatureLevel >= D3D_FEATURE_LEVEL_11_0) ? true : false);
+	if (aquiredFeatureLevel >= D3D_FEATURE_LEVEL_11_0)
+	{
+		capabilities |= GRAPHICSDEVICE_CAPABILITY_TESSELLATION;
+	}
 
 	//D3D11_FEATURE_DATA_D3D11_OPTIONS features_0;
 	//hr = device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &features_0, sizeof(features_0));
@@ -1306,26 +1491,35 @@ GraphicsDevice_DX11::GraphicsDevice_DX11(wiPlatform::window_type window, bool fu
 
 	D3D11_FEATURE_DATA_D3D11_OPTIONS2 features_2;
 	hr = device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS2, &features_2, sizeof(features_2));
-	CONSERVATIVE_RASTERIZATION = features_2.ConservativeRasterizationTier >= D3D11_CONSERVATIVE_RASTERIZATION_TIER_1;
-	RASTERIZER_ORDERED_VIEWS = features_2.ROVsSupported == TRUE;
+	if (features_2.ConservativeRasterizationTier >= D3D11_CONSERVATIVE_RASTERIZATION_TIER_1)
+	{
+		capabilities |= GRAPHICSDEVICE_CAPABILITY_CONSERVATIVE_RASTERIZATION;
+	}
+	if (features_2.ROVsSupported == TRUE)
+	{
+		capabilities |= GRAPHICSDEVICE_CAPABILITY_RASTERIZER_ORDERED_VIEWS;
+	}
 
 	if (features_2.TypedUAVLoadAdditionalFormats)
 	{
 		// More info about UAV format load support: https://docs.microsoft.com/en-us/windows/win32/direct3d12/typed-unordered-access-view-loads
-		UAV_LOAD_FORMAT_COMMON = true;
+		capabilities |= GRAPHICSDEVICE_CAPABILITY_UAV_LOAD_FORMAT_COMMON;
 
 		D3D11_FEATURE_DATA_FORMAT_SUPPORT2 FormatSupport = {};
 		FormatSupport.InFormat = DXGI_FORMAT_R11G11B10_FLOAT;
 		hr = device->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT2, &FormatSupport, sizeof(FormatSupport));
 		if (SUCCEEDED(hr) && (FormatSupport.OutFormatSupport2 & D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD) != 0)
 		{
-			UAV_LOAD_FORMAT_R11G11B10_FLOAT = true;
+			capabilities |= GRAPHICSDEVICE_CAPABILITY_UAV_LOAD_FORMAT_R11G11B10_FLOAT;
 		}
 	}
 
 	D3D11_FEATURE_DATA_D3D11_OPTIONS3 features_3;
 	hr = device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS3, &features_3, sizeof(features_3));
-	RENDERTARGET_AND_VIEWPORT_ARRAYINDEX_WITHOUT_GS = features_3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer == TRUE;
+	if (features_3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer == TRUE)
+	{
+		capabilities |= GRAPHICSDEVICE_CAPABILITY_RENDERTARGET_AND_VIEWPORT_ARRAYINDEX_WITHOUT_GS;
+	}
 
 	CreateBackBufferResources();
 
@@ -1365,8 +1559,6 @@ void GraphicsDevice_DX11::SetResolution(int width, int height)
 		assert(SUCCEEDED(hr));
 
 		CreateBackBufferResources();
-
-		RESOLUTIONCHANGED = true;
 	}
 }
 
@@ -1386,7 +1578,7 @@ Texture GraphicsDevice_DX11::GetBackBuffer()
 	return result;
 }
 
-bool GraphicsDevice_DX11::CreateBuffer(const GPUBufferDesc *pDesc, const SubresourceData* pInitialData, GPUBuffer *pBuffer)
+bool GraphicsDevice_DX11::CreateBuffer(const GPUBufferDesc *pDesc, const SubresourceData* pInitialData, GPUBuffer *pBuffer) const
 {
 	auto internal_state = std::make_shared<Resource_DX11>();
 	pBuffer->internal_state = internal_state;
@@ -1413,82 +1605,19 @@ bool GraphicsDevice_DX11::CreateBuffer(const GPUBufferDesc *pDesc, const Subreso
 	if (SUCCEEDED(hr))
 	{
 		// Create resource views if needed
-		if (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE)
+		if (pDesc->BindFlags & BIND_SHADER_RESOURCE)
 		{
-
-			D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-
-			if (desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS)
-			{
-				// This is a Raw Buffer
-
-				srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
-				srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
-				srv_desc.BufferEx.FirstElement = 0;
-				srv_desc.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
-				srv_desc.BufferEx.NumElements = desc.ByteWidth / 4;
-			}
-			else if (desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED)
-			{
-				// This is a Structured Buffer
-
-				srv_desc.Format = DXGI_FORMAT_UNKNOWN;
-				srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
-				srv_desc.BufferEx.FirstElement = 0;
-				srv_desc.BufferEx.NumElements = desc.ByteWidth / desc.StructureByteStride;
-			}
-			else
-			{
-				// This is a Typed Buffer
-
-				srv_desc.Format = _ConvertFormat(pDesc->Format);
-				srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-				srv_desc.Buffer.FirstElement = 0;
-				srv_desc.Buffer.NumElements = desc.ByteWidth / desc.StructureByteStride;
-			}
-
-			hr = device->CreateShaderResourceView(internal_state->resource.Get(), &srv_desc, &internal_state->srv);
-
-			assert(SUCCEEDED(hr) && "ShaderResourceView of the GPUBuffer could not be created!");
+			CreateSubresource(pBuffer, SRV, 0);
 		}
-		if (desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS)
+		if (pDesc->BindFlags & BIND_UNORDERED_ACCESS)
 		{
-			D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
-			uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-			uav_desc.Buffer.FirstElement = 0;
-
-			if (desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS)
-			{
-				// This is a Raw Buffer
-
-				uav_desc.Format = DXGI_FORMAT_R32_TYPELESS; // Format must be DXGI_FORMAT_R32_TYPELESS, when creating Raw Unordered Access View
-				uav_desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
-				uav_desc.Buffer.NumElements = desc.ByteWidth / 4;
-			}
-			else if (desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED)
-			{
-				// This is a Structured Buffer
-
-				uav_desc.Format = DXGI_FORMAT_UNKNOWN;      // Format must be must be DXGI_FORMAT_UNKNOWN, when creating a View of a Structured Buffer
-				uav_desc.Buffer.NumElements = desc.ByteWidth / desc.StructureByteStride;
-			}
-			else
-			{
-				// This is a Typed Buffer
-
-				uav_desc.Format = _ConvertFormat(pDesc->Format);
-				uav_desc.Buffer.NumElements = desc.ByteWidth / desc.StructureByteStride;
-			}
-
-			hr = device->CreateUnorderedAccessView(internal_state->resource.Get(), &uav_desc, &internal_state->uav);
-
-			assert(SUCCEEDED(hr) && "UnorderedAccessView of the GPUBuffer could not be created!");
+			CreateSubresource(pBuffer, UAV, 0);
 		}
 	}
 
 	return SUCCEEDED(hr);
 }
-bool GraphicsDevice_DX11::CreateTexture(const TextureDesc* pDesc, const SubresourceData *pInitialData, Texture *pTexture)
+bool GraphicsDevice_DX11::CreateTexture(const TextureDesc* pDesc, const SubresourceData *pInitialData, Texture *pTexture) const
 {
 	auto internal_state = std::make_shared<Texture_DX11>();
 	pTexture->internal_state = internal_state;
@@ -1540,7 +1669,7 @@ bool GraphicsDevice_DX11::CreateTexture(const TextureDesc* pDesc, const Subresou
 
 	if (pTexture->desc.MipLevels == 0)
 	{
-		pTexture->desc.MipLevels = (uint32_t)log2(std::max(pTexture->desc.Width, pTexture->desc.Height));
+		pTexture->desc.MipLevels = (uint32_t)log2(std::max(pTexture->desc.Width, pTexture->desc.Height)) + 1;
 	}
 
 	if (pTexture->desc.BindFlags & BIND_RENDER_TARGET)
@@ -1562,37 +1691,8 @@ bool GraphicsDevice_DX11::CreateTexture(const TextureDesc* pDesc, const Subresou
 
 	return SUCCEEDED(hr);
 }
-bool GraphicsDevice_DX11::CreateInputLayout(const InputLayoutDesc *pInputElementDescs, uint32_t NumElements, const Shader* shader, InputLayout *pInputLayout)
+bool GraphicsDevice_DX11::CreateShader(SHADERSTAGE stage, const void *pShaderBytecode, size_t BytecodeLength, Shader *pShader) const
 {
-	auto internal_state = std::make_shared<InputLayout_DX11>();
-	pInputLayout->internal_state = internal_state;
-
-	pInputLayout->desc.reserve((size_t)NumElements);
-
-	std::vector<D3D11_INPUT_ELEMENT_DESC> desc(NumElements);
-	for (uint32_t i = 0; i < NumElements; ++i)
-	{
-		desc[i].SemanticName = pInputElementDescs[i].SemanticName;
-		desc[i].SemanticIndex = pInputElementDescs[i].SemanticIndex;
-		desc[i].Format = _ConvertFormat(pInputElementDescs[i].Format);
-		desc[i].InputSlot = pInputElementDescs[i].InputSlot;
-		desc[i].AlignedByteOffset = pInputElementDescs[i].AlignedByteOffset;
-		if (desc[i].AlignedByteOffset == InputLayoutDesc::APPEND_ALIGNED_ELEMENT)
-			desc[i].AlignedByteOffset = D3D11_APPEND_ALIGNED_ELEMENT;
-		desc[i].InputSlotClass = _ConvertInputClassification(pInputElementDescs[i].InputSlotClass);
-		desc[i].InstanceDataStepRate = pInputElementDescs[i].InstanceDataStepRate;
-
-		pInputLayout->desc.push_back(pInputElementDescs[i]);
-	}
-
-	HRESULT hr = device->CreateInputLayout(desc.data(), NumElements, shader->code.data(), shader->code.size(), &internal_state->resource);
-
-	return SUCCEEDED(hr);
-}
-bool GraphicsDevice_DX11::CreateShader(SHADERSTAGE stage, const void *pShaderBytecode, size_t BytecodeLength, Shader *pShader)
-{
-	pShader->code.resize(BytecodeLength);
-	std::memcpy(pShader->code.data(), pShaderBytecode, BytecodeLength);
 	pShader->stage = stage;
 
 	HRESULT hr = E_FAIL;
@@ -1603,6 +1703,8 @@ bool GraphicsDevice_DX11::CreateShader(SHADERSTAGE stage, const void *pShaderByt
 	{
 		auto internal_state = std::make_shared<VertexShader_DX11>();
 		pShader->internal_state = internal_state;
+		internal_state->shadercode.resize(BytecodeLength);
+		std::memcpy(internal_state->shadercode.data(), pShaderBytecode, BytecodeLength);
 		hr = device->CreateVertexShader(pShaderBytecode, BytecodeLength, nullptr, &internal_state->resource);
 	}
 	break;
@@ -1647,145 +1749,7 @@ bool GraphicsDevice_DX11::CreateShader(SHADERSTAGE stage, const void *pShaderByt
 
 	return SUCCEEDED(hr);
 }
-bool GraphicsDevice_DX11::CreateBlendState(const BlendStateDesc *pBlendStateDesc, BlendState *pBlendState)
-{
-	auto internal_state = std::make_shared<BlendState_DX11>();
-	pBlendState->internal_state = internal_state;
-
-	D3D11_BLEND_DESC desc;
-	desc.AlphaToCoverageEnable = pBlendStateDesc->AlphaToCoverageEnable;
-	desc.IndependentBlendEnable = pBlendStateDesc->IndependentBlendEnable;
-	for (int i = 0; i < 8; ++i)
-	{
-		desc.RenderTarget[i].BlendEnable = pBlendStateDesc->RenderTarget[i].BlendEnable;
-		desc.RenderTarget[i].SrcBlend = _ConvertBlend(pBlendStateDesc->RenderTarget[i].SrcBlend);
-		desc.RenderTarget[i].DestBlend = _ConvertBlend(pBlendStateDesc->RenderTarget[i].DestBlend);
-		desc.RenderTarget[i].BlendOp = _ConvertBlendOp(pBlendStateDesc->RenderTarget[i].BlendOp);
-		desc.RenderTarget[i].SrcBlendAlpha = _ConvertBlend(pBlendStateDesc->RenderTarget[i].SrcBlendAlpha);
-		desc.RenderTarget[i].DestBlendAlpha = _ConvertBlend(pBlendStateDesc->RenderTarget[i].DestBlendAlpha);
-		desc.RenderTarget[i].BlendOpAlpha = _ConvertBlendOp(pBlendStateDesc->RenderTarget[i].BlendOpAlpha);
-		desc.RenderTarget[i].RenderTargetWriteMask = _ParseColorWriteMask(pBlendStateDesc->RenderTarget[i].RenderTargetWriteMask);
-	}
-
-	pBlendState->desc = *pBlendStateDesc;
-	HRESULT hr = device->CreateBlendState(&desc, &internal_state->resource);
-	assert(SUCCEEDED(hr));
-
-	return SUCCEEDED(hr);
-}
-bool GraphicsDevice_DX11::CreateDepthStencilState(const DepthStencilStateDesc *pDepthStencilStateDesc, DepthStencilState *pDepthStencilState)
-{
-	auto internal_state = std::make_shared<DepthStencilState_DX11>();
-	pDepthStencilState->internal_state = internal_state;
-
-	D3D11_DEPTH_STENCIL_DESC desc;
-	desc.DepthEnable = pDepthStencilStateDesc->DepthEnable;
-	desc.DepthWriteMask = _ConvertDepthWriteMask(pDepthStencilStateDesc->DepthWriteMask);
-	desc.DepthFunc = _ConvertComparisonFunc(pDepthStencilStateDesc->DepthFunc);
-	desc.StencilEnable = pDepthStencilStateDesc->StencilEnable;
-	desc.StencilReadMask = pDepthStencilStateDesc->StencilReadMask;
-	desc.StencilWriteMask = pDepthStencilStateDesc->StencilWriteMask;
-	desc.FrontFace.StencilDepthFailOp = _ConvertStencilOp(pDepthStencilStateDesc->FrontFace.StencilDepthFailOp);
-	desc.FrontFace.StencilFailOp = _ConvertStencilOp(pDepthStencilStateDesc->FrontFace.StencilFailOp);
-	desc.FrontFace.StencilFunc = _ConvertComparisonFunc(pDepthStencilStateDesc->FrontFace.StencilFunc);
-	desc.FrontFace.StencilPassOp = _ConvertStencilOp(pDepthStencilStateDesc->FrontFace.StencilPassOp);
-	desc.BackFace.StencilDepthFailOp = _ConvertStencilOp(pDepthStencilStateDesc->BackFace.StencilDepthFailOp);
-	desc.BackFace.StencilFailOp = _ConvertStencilOp(pDepthStencilStateDesc->BackFace.StencilFailOp);
-	desc.BackFace.StencilFunc = _ConvertComparisonFunc(pDepthStencilStateDesc->BackFace.StencilFunc);
-	desc.BackFace.StencilPassOp = _ConvertStencilOp(pDepthStencilStateDesc->BackFace.StencilPassOp);
-
-	pDepthStencilState->desc = *pDepthStencilStateDesc;
-	HRESULT hr = device->CreateDepthStencilState(&desc, &internal_state->resource);
-	assert(SUCCEEDED(hr));
-
-	return SUCCEEDED(hr);
-}
-bool GraphicsDevice_DX11::CreateRasterizerState(const RasterizerStateDesc *pRasterizerStateDesc, RasterizerState *pRasterizerState)
-{
-	auto internal_state = std::make_shared<RasterizerState_DX11>();
-	pRasterizerState->internal_state = internal_state;
-
-	pRasterizerState->desc = *pRasterizerStateDesc;
-
-	D3D11_RASTERIZER_DESC desc;
-	desc.FillMode = _ConvertFillMode(pRasterizerStateDesc->FillMode);
-	desc.CullMode = _ConvertCullMode(pRasterizerStateDesc->CullMode);
-	desc.FrontCounterClockwise = pRasterizerStateDesc->FrontCounterClockwise;
-	desc.DepthBias = pRasterizerStateDesc->DepthBias;
-	desc.DepthBiasClamp = pRasterizerStateDesc->DepthBiasClamp;
-	desc.SlopeScaledDepthBias = pRasterizerStateDesc->SlopeScaledDepthBias;
-	desc.DepthClipEnable = pRasterizerStateDesc->DepthClipEnable;
-	desc.ScissorEnable = true;
-	desc.MultisampleEnable = pRasterizerStateDesc->MultisampleEnable;
-	desc.AntialiasedLineEnable = pRasterizerStateDesc->AntialiasedLineEnable;
-
-
-	if (CONSERVATIVE_RASTERIZATION && pRasterizerStateDesc->ConservativeRasterizationEnable == TRUE)
-	{
-		ComPtr<ID3D11Device3> device3;
-		if (SUCCEEDED(device.As(&device3)))
-		{
-			D3D11_RASTERIZER_DESC2 desc2;
-			desc2.FillMode = desc.FillMode;
-			desc2.CullMode = desc.CullMode;
-			desc2.FrontCounterClockwise = desc.FrontCounterClockwise;
-			desc2.DepthBias = desc.DepthBias;
-			desc2.DepthBiasClamp = desc.DepthBiasClamp;
-			desc2.SlopeScaledDepthBias = desc.SlopeScaledDepthBias;
-			desc2.DepthClipEnable = desc.DepthClipEnable;
-			desc2.ScissorEnable = desc.ScissorEnable;
-			desc2.MultisampleEnable = desc.MultisampleEnable;
-			desc2.AntialiasedLineEnable = desc.AntialiasedLineEnable;
-			desc2.ConservativeRaster = D3D11_CONSERVATIVE_RASTERIZATION_MODE_ON;
-			desc2.ForcedSampleCount = (RASTERIZER_ORDERED_VIEWS ? pRasterizerStateDesc->ForcedSampleCount : 0);
-
-			pRasterizerState->desc = *pRasterizerStateDesc;
-
-			ComPtr<ID3D11RasterizerState2> rasterizer2;
-			HRESULT hr = device3->CreateRasterizerState2(&desc2, &rasterizer2);
-			assert(SUCCEEDED(hr));
-
-			internal_state->resource = rasterizer2;
-
-			return SUCCEEDED(hr);
-		}
-	}
-	else if (RASTERIZER_ORDERED_VIEWS && pRasterizerStateDesc->ForcedSampleCount > 0)
-	{
-		ComPtr<ID3D11Device1> device1;
-		if (SUCCEEDED(device.As(&device1)))
-		{
-			D3D11_RASTERIZER_DESC1 desc1;
-			desc1.FillMode = desc.FillMode;
-			desc1.CullMode = desc.CullMode;
-			desc1.FrontCounterClockwise = desc.FrontCounterClockwise;
-			desc1.DepthBias = desc.DepthBias;
-			desc1.DepthBiasClamp = desc.DepthBiasClamp;
-			desc1.SlopeScaledDepthBias = desc.SlopeScaledDepthBias;
-			desc1.DepthClipEnable = desc.DepthClipEnable;
-			desc1.ScissorEnable = desc.ScissorEnable;
-			desc1.MultisampleEnable = desc.MultisampleEnable;
-			desc1.AntialiasedLineEnable = desc.AntialiasedLineEnable;
-			desc1.ForcedSampleCount = pRasterizerStateDesc->ForcedSampleCount;
-
-			pRasterizerState->desc = *pRasterizerStateDesc;
-
-			ComPtr<ID3D11RasterizerState1> rasterizer1;
-			HRESULT hr = device1->CreateRasterizerState1(&desc1, &rasterizer1);
-			assert(SUCCEEDED(hr));
-
-			internal_state->resource = rasterizer1;
-
-			return SUCCEEDED(hr);
-		}
-	}
-
-	HRESULT hr = device->CreateRasterizerState(&desc, &internal_state->resource);
-	assert(SUCCEEDED(hr));
-
-	return SUCCEEDED(hr);
-}
-bool GraphicsDevice_DX11::CreateSampler(const SamplerDesc *pSamplerDesc, Sampler *pSamplerState)
+bool GraphicsDevice_DX11::CreateSampler(const SamplerDesc *pSamplerDesc, Sampler *pSamplerState) const
 {
 	auto internal_state = std::make_shared<Sampler_DX11>();
 	pSamplerState->internal_state = internal_state;
@@ -1811,51 +1775,200 @@ bool GraphicsDevice_DX11::CreateSampler(const SamplerDesc *pSamplerDesc, Sampler
 
 	return SUCCEEDED(hr);
 }
-bool GraphicsDevice_DX11::CreateQuery(const GPUQueryDesc *pDesc, GPUQuery *pQuery)
+bool GraphicsDevice_DX11::CreateQueryHeap(const GPUQueryHeapDesc* pDesc, GPUQueryHeap* pQueryHeap) const
 {
-	auto internal_state = std::make_shared<Query_DX11>();
-	pQuery->internal_state = internal_state;
+	auto internal_state = std::make_shared<QueryHeap_DX11>();
+	pQueryHeap->internal_state = internal_state;
 
-	pQuery->desc = *pDesc;
+	pQueryHeap->desc = *pDesc;
 
 	D3D11_QUERY_DESC desc;
 	desc.MiscFlags = 0;
 	desc.Query = D3D11_QUERY_EVENT;
-	if (pDesc->Type == GPU_QUERY_TYPE_EVENT)
+	switch (pDesc->type)
 	{
-		desc.Query = D3D11_QUERY_EVENT;
-	}
-	else if (pDesc->Type == GPU_QUERY_TYPE_OCCLUSION)
-	{
-		desc.Query = D3D11_QUERY_OCCLUSION;
-	}
-	else if (pDesc->Type == GPU_QUERY_TYPE_OCCLUSION_PREDICATE)
-	{
-		desc.Query = D3D11_QUERY_OCCLUSION_PREDICATE;
-	}
-	else if (pDesc->Type == GPU_QUERY_TYPE_TIMESTAMP)
-	{
+	default:
+	case GPU_QUERY_TYPE_TIMESTAMP:
 		desc.Query = D3D11_QUERY_TIMESTAMP;
+		break;
+	case GPU_QUERY_TYPE_OCCLUSION:
+		desc.Query = D3D11_QUERY_OCCLUSION;
+		break;
+	case GPU_QUERY_TYPE_OCCLUSION_BINARY:
+		desc.Query = D3D11_QUERY_OCCLUSION_PREDICATE;
+		break;
 	}
-	else if (pDesc->Type == GPU_QUERY_TYPE_TIMESTAMP_DISJOINT)
+
+	internal_state->resources.resize(pDesc->queryCount);
+	for (uint32_t i = 0; i < pDesc->queryCount; ++i)
 	{
-		desc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+		HRESULT hr = device->CreateQuery(&desc, &internal_state->resources[i]);
+		if (!SUCCEEDED(hr))
+		{
+			return false;
+		}
 	}
-
-	HRESULT hr = device->CreateQuery(&desc, &internal_state->resource);
-	assert(SUCCEEDED(hr));
-
-	return SUCCEEDED(hr);
-}
-bool GraphicsDevice_DX11::CreatePipelineState(const PipelineStateDesc* pDesc, PipelineState* pso)
-{
-	pso->internal_state = emptyresource;
-
-	pso->desc = *pDesc;
 
 	return true;
 }
-bool GraphicsDevice_DX11::CreateRenderPass(const RenderPassDesc* pDesc, RenderPass* renderpass)
+bool GraphicsDevice_DX11::CreatePipelineState(const PipelineStateDesc* pDesc, PipelineState* pso) const
+{
+	auto internal_state = std::make_shared<PipelineState_DX11>();
+	pso->internal_state = internal_state;
+
+	pso->desc = *pDesc;
+
+	HRESULT hr;
+
+
+
+	if (pDesc->il != nullptr)
+	{
+		std::vector<D3D11_INPUT_ELEMENT_DESC> desc(pDesc->il->elements.size());
+		for (size_t i = 0; i < desc.size(); ++i)
+		{
+			desc[i].SemanticName = pDesc->il->elements[i].SemanticName.c_str();
+			desc[i].SemanticIndex = pDesc->il->elements[i].SemanticIndex;
+			desc[i].Format = _ConvertFormat(pDesc->il->elements[i].Format);
+			desc[i].InputSlot = pDesc->il->elements[i].InputSlot;
+			desc[i].AlignedByteOffset = pDesc->il->elements[i].AlignedByteOffset;
+			if (desc[i].AlignedByteOffset == InputLayout::APPEND_ALIGNED_ELEMENT)
+				desc[i].AlignedByteOffset = D3D11_APPEND_ALIGNED_ELEMENT;
+			desc[i].InputSlotClass = _ConvertInputClassification(pDesc->il->elements[i].InputSlotClass);
+			desc[i].InstanceDataStepRate = 0;
+			if (desc[i].InputSlotClass == D3D11_INPUT_PER_INSTANCE_DATA)
+			{
+				desc[i].InstanceDataStepRate = 1;
+			}
+		}
+
+		assert(pDesc->vs != nullptr);
+		auto vs_internal = static_cast<VertexShader_DX11*>(pDesc->vs->internal_state.get());
+		hr = device->CreateInputLayout(desc.data(), (UINT)desc.size(), vs_internal->shadercode.data(), vs_internal->shadercode.size(), &internal_state->il);
+		assert(SUCCEEDED(hr));
+	}
+
+
+
+	if (pDesc->bs != nullptr)
+	{
+		D3D11_BLEND_DESC desc;
+		desc.AlphaToCoverageEnable = pDesc->bs->AlphaToCoverageEnable;
+		desc.IndependentBlendEnable = pDesc->bs->IndependentBlendEnable;
+		for (int i = 0; i < 8; ++i)
+		{
+			desc.RenderTarget[i].BlendEnable = pDesc->bs->RenderTarget[i].BlendEnable;
+			desc.RenderTarget[i].SrcBlend = _ConvertBlend(pDesc->bs->RenderTarget[i].SrcBlend);
+			desc.RenderTarget[i].DestBlend = _ConvertBlend(pDesc->bs->RenderTarget[i].DestBlend);
+			desc.RenderTarget[i].BlendOp = _ConvertBlendOp(pDesc->bs->RenderTarget[i].BlendOp);
+			desc.RenderTarget[i].SrcBlendAlpha = _ConvertBlend(pDesc->bs->RenderTarget[i].SrcBlendAlpha);
+			desc.RenderTarget[i].DestBlendAlpha = _ConvertBlend(pDesc->bs->RenderTarget[i].DestBlendAlpha);
+			desc.RenderTarget[i].BlendOpAlpha = _ConvertBlendOp(pDesc->bs->RenderTarget[i].BlendOpAlpha);
+			desc.RenderTarget[i].RenderTargetWriteMask = _ParseColorWriteMask(pDesc->bs->RenderTarget[i].RenderTargetWriteMask);
+		}
+
+		hr = device->CreateBlendState(&desc, &internal_state->bs);
+		assert(SUCCEEDED(hr));
+	}
+
+
+	if (pDesc->dss != nullptr)
+	{
+		D3D11_DEPTH_STENCIL_DESC desc;
+		desc.DepthEnable = pDesc->dss->DepthEnable;
+		desc.DepthWriteMask = _ConvertDepthWriteMask(pDesc->dss->DepthWriteMask);
+		desc.DepthFunc = _ConvertComparisonFunc(pDesc->dss->DepthFunc);
+		desc.StencilEnable = pDesc->dss->StencilEnable;
+		desc.StencilReadMask = pDesc->dss->StencilReadMask;
+		desc.StencilWriteMask = pDesc->dss->StencilWriteMask;
+		desc.FrontFace.StencilDepthFailOp = _ConvertStencilOp(pDesc->dss->FrontFace.StencilDepthFailOp);
+		desc.FrontFace.StencilFailOp = _ConvertStencilOp(pDesc->dss->FrontFace.StencilFailOp);
+		desc.FrontFace.StencilFunc = _ConvertComparisonFunc(pDesc->dss->FrontFace.StencilFunc);
+		desc.FrontFace.StencilPassOp = _ConvertStencilOp(pDesc->dss->FrontFace.StencilPassOp);
+		desc.BackFace.StencilDepthFailOp = _ConvertStencilOp(pDesc->dss->BackFace.StencilDepthFailOp);
+		desc.BackFace.StencilFailOp = _ConvertStencilOp(pDesc->dss->BackFace.StencilFailOp);
+		desc.BackFace.StencilFunc = _ConvertComparisonFunc(pDesc->dss->BackFace.StencilFunc);
+		desc.BackFace.StencilPassOp = _ConvertStencilOp(pDesc->dss->BackFace.StencilPassOp);
+
+		hr = device->CreateDepthStencilState(&desc, &internal_state->dss);
+		assert(SUCCEEDED(hr));
+	}
+
+
+	if (pDesc->rs != nullptr)
+	{
+		D3D11_RASTERIZER_DESC desc;
+		desc.FillMode = _ConvertFillMode(pDesc->rs->FillMode);
+		desc.CullMode = _ConvertCullMode(pDesc->rs->CullMode);
+		desc.FrontCounterClockwise = pDesc->rs->FrontCounterClockwise;
+		desc.DepthBias = pDesc->rs->DepthBias;
+		desc.DepthBiasClamp = pDesc->rs->DepthBiasClamp;
+		desc.SlopeScaledDepthBias = pDesc->rs->SlopeScaledDepthBias;
+		desc.DepthClipEnable = pDesc->rs->DepthClipEnable;
+		desc.ScissorEnable = true;
+		desc.MultisampleEnable = pDesc->rs->MultisampleEnable;
+		desc.AntialiasedLineEnable = pDesc->rs->AntialiasedLineEnable;
+
+
+		if (CheckCapability(GRAPHICSDEVICE_CAPABILITY_CONSERVATIVE_RASTERIZATION) && pDesc->rs->ConservativeRasterizationEnable == TRUE)
+		{
+			ComPtr<ID3D11Device3> device3;
+			if (SUCCEEDED(device.As(&device3)))
+			{
+				D3D11_RASTERIZER_DESC2 desc2;
+				desc2.FillMode = desc.FillMode;
+				desc2.CullMode = desc.CullMode;
+				desc2.FrontCounterClockwise = desc.FrontCounterClockwise;
+				desc2.DepthBias = desc.DepthBias;
+				desc2.DepthBiasClamp = desc.DepthBiasClamp;
+				desc2.SlopeScaledDepthBias = desc.SlopeScaledDepthBias;
+				desc2.DepthClipEnable = desc.DepthClipEnable;
+				desc2.ScissorEnable = desc.ScissorEnable;
+				desc2.MultisampleEnable = desc.MultisampleEnable;
+				desc2.AntialiasedLineEnable = desc.AntialiasedLineEnable;
+				desc2.ConservativeRaster = D3D11_CONSERVATIVE_RASTERIZATION_MODE_ON;
+				desc2.ForcedSampleCount = pDesc->rs->ForcedSampleCount;
+
+				ComPtr<ID3D11RasterizerState2> rasterizer2;
+				hr = device3->CreateRasterizerState2(&desc2, &rasterizer2);
+				assert(SUCCEEDED(hr));
+
+				internal_state->rs = rasterizer2;
+			}
+		}
+		else if (pDesc->rs->ForcedSampleCount > 0)
+		{
+			ComPtr<ID3D11Device1> device1;
+			if (SUCCEEDED(device.As(&device1)))
+			{
+				D3D11_RASTERIZER_DESC1 desc1;
+				desc1.FillMode = desc.FillMode;
+				desc1.CullMode = desc.CullMode;
+				desc1.FrontCounterClockwise = desc.FrontCounterClockwise;
+				desc1.DepthBias = desc.DepthBias;
+				desc1.DepthBiasClamp = desc.DepthBiasClamp;
+				desc1.SlopeScaledDepthBias = desc.SlopeScaledDepthBias;
+				desc1.DepthClipEnable = desc.DepthClipEnable;
+				desc1.ScissorEnable = desc.ScissorEnable;
+				desc1.MultisampleEnable = desc.MultisampleEnable;
+				desc1.AntialiasedLineEnable = desc.AntialiasedLineEnable;
+				desc1.ForcedSampleCount = pDesc->rs->ForcedSampleCount;
+
+				ComPtr<ID3D11RasterizerState1> rasterizer1;
+				hr = device1->CreateRasterizerState1(&desc1, &rasterizer1);
+				assert(SUCCEEDED(hr));
+
+				internal_state->rs = rasterizer1;
+			}
+		}
+
+		hr = device->CreateRasterizerState(&desc, &internal_state->rs);
+		assert(SUCCEEDED(hr));
+	}
+
+	return true;
+}
+bool GraphicsDevice_DX11::CreateRenderPass(const RenderPassDesc* pDesc, RenderPass* renderpass) const
 {
 	renderpass->internal_state = emptyresource;
 
@@ -1864,7 +1977,7 @@ bool GraphicsDevice_DX11::CreateRenderPass(const RenderPassDesc* pDesc, RenderPa
 	return true;
 }
 
-int GraphicsDevice_DX11::CreateSubresource(Texture* texture, SUBRESOURCE_TYPE type, uint32_t firstSlice, uint32_t sliceCount, uint32_t firstMip, uint32_t mipCount)
+int GraphicsDevice_DX11::CreateSubresource(Texture* texture, SUBRESOURCE_TYPE type, uint32_t firstSlice, uint32_t sliceCount, uint32_t firstMip, uint32_t mipCount) const
 {
 	auto internal_state = to_internal(texture);
 
@@ -2259,88 +2372,202 @@ int GraphicsDevice_DX11::CreateSubresource(Texture* texture, SUBRESOURCE_TYPE ty
 	}
 	return -1;
 }
-
-bool GraphicsDevice_DX11::DownloadResource(const GPUResource* resourceToDownload, const GPUResource* resourceDest, void* dataDest)
+int GraphicsDevice_DX11::CreateSubresource(GPUBuffer* buffer, SUBRESOURCE_TYPE type, uint64_t offset, uint64_t size) const
 {
-	assert(resourceToDownload->type == resourceDest->type);
-	auto internal_state_src = to_internal(resourceToDownload);
-	auto internal_state_dst = to_internal(resourceDest);
+	auto internal_state = to_internal(buffer);
+	const GPUBufferDesc& desc = buffer->GetDesc();
+	HRESULT hr = E_FAIL;
 
-	if (resourceToDownload->IsBuffer())
+	switch (type)
 	{
-		const GPUBuffer* bufferToDownload = static_cast<const GPUBuffer*>(resourceToDownload);
-		const GPUBuffer* bufferDest = static_cast<const GPUBuffer*>(resourceDest);
+	case wiGraphics::SRV:
+	{
+		D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
 
-		if (bufferToDownload != nullptr && bufferDest != nullptr)
+		if (desc.MiscFlags & RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS)
 		{
-			assert(bufferToDownload->desc.ByteWidth <= bufferDest->desc.ByteWidth);
-			assert(bufferDest->desc.Usage & USAGE_STAGING);
-			assert(dataDest != nullptr);
+			// This is a Raw Buffer
+			srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
+			srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+			srv_desc.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
+			srv_desc.BufferEx.FirstElement = (UINT)offset / sizeof(uint32_t);
+			srv_desc.BufferEx.NumElements = std::min((UINT)size, desc.ByteWidth - (UINT)offset) / sizeof(uint32_t);
+		}
+		else if (desc.MiscFlags & RESOURCE_MISC_BUFFER_STRUCTURED)
+		{
+			// This is a Structured Buffer
+			srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+			srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+			srv_desc.BufferEx.FirstElement = (UINT)offset / desc.StructureByteStride;
+			srv_desc.BufferEx.NumElements = std::min((UINT)size, desc.ByteWidth - (UINT)offset) / desc.StructureByteStride;
+		}
+		else
+		{
+			// This is a Typed Buffer
+			uint32_t stride = GetFormatStride(desc.Format);
+			srv_desc.Format = _ConvertFormat(desc.Format);
+			srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+			srv_desc.Buffer.FirstElement = (UINT)offset / stride;
+			srv_desc.Buffer.NumElements = std::min((UINT)size, desc.ByteWidth - (UINT)offset) / stride;
+		}
 
-			immediateContext->CopyResource(internal_state_dst->resource.Get(), internal_state_src->resource.Get());
+		ComPtr<ID3D11ShaderResourceView> srv;
+		hr = device->CreateShaderResourceView(internal_state->resource.Get(), &srv_desc, &srv);
 
-			D3D11_MAPPED_SUBRESOURCE mappedResource = {};
-			HRESULT hr = immediateContext->Map(internal_state_dst->resource.Get(), 0, D3D11_MAP_READ, /*async ? D3D11_MAP_FLAG_DO_NOT_WAIT :*/ 0, &mappedResource);
-			bool result = SUCCEEDED(hr);
-			if (result)
+		if (SUCCEEDED(hr))
+		{
+			if (internal_state->srv == nullptr)
 			{
-				memcpy(dataDest, mappedResource.pData, bufferToDownload->desc.ByteWidth);
-				immediateContext->Unmap(internal_state_dst->resource.Get(), 0);
+				internal_state->srv = srv;
+				return -1;
 			}
-
-			return result;
+			else
+			{
+				internal_state->subresources_srv.push_back(srv);
+				return int(internal_state->subresources_srv.size() - 1);
+			}
+		}
+		else
+		{
+			assert(0);
 		}
 	}
-	else if (resourceToDownload->IsTexture())
+	break;
+	case wiGraphics::UAV:
 	{
-		const Texture* textureToDownload = static_cast<const Texture*>(resourceToDownload);
-		const Texture* textureDest = static_cast<const Texture*>(resourceDest);
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+		uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
 
-		if (textureToDownload != nullptr && textureDest != nullptr)
+		if (desc.MiscFlags & RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS)
 		{
-			assert(textureToDownload->desc.Width <= textureDest->desc.Width);
-			assert(textureToDownload->desc.Height <= textureDest->desc.Height);
-			assert(textureToDownload->desc.Depth <= textureDest->desc.Depth);
-			assert(textureDest->desc.Usage & USAGE_STAGING);
-			assert(dataDest != nullptr);
+			// This is a Raw Buffer
+			uav_desc.Format = DXGI_FORMAT_R32_TYPELESS; // Format must be DXGI_FORMAT_R32_TYPELESS, when creating Raw Unordered Access View
+			uav_desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+			uav_desc.Buffer.FirstElement = (UINT)offset / sizeof(uint32_t);
+			uav_desc.Buffer.NumElements = std::min((UINT)size, desc.ByteWidth - (UINT)offset) / sizeof(uint32_t);
+		}
+		else if (desc.MiscFlags & RESOURCE_MISC_BUFFER_STRUCTURED)
+		{
+			// This is a Structured Buffer
+			uav_desc.Format = DXGI_FORMAT_UNKNOWN;      // Format must be must be DXGI_FORMAT_UNKNOWN, when creating a View of a Structured Buffer
+			uav_desc.Buffer.FirstElement = (UINT)offset / desc.StructureByteStride;
+			uav_desc.Buffer.NumElements = std::min((UINT)size, desc.ByteWidth - (UINT)offset) / desc.StructureByteStride;
+		}
+		else
+		{
+			// This is a Typed Buffer
+			uint32_t stride = GetFormatStride(desc.Format);
+			uav_desc.Format = _ConvertFormat(desc.Format);
+			uav_desc.Buffer.FirstElement = (UINT)offset / stride;
+			uav_desc.Buffer.NumElements = std::min((UINT)size, desc.ByteWidth - (UINT)offset) / stride;
+		}
 
-			immediateContext->CopyResource(internal_state_dst->resource.Get(), internal_state_src->resource.Get());
+		ComPtr<ID3D11UnorderedAccessView> uav;
+		hr = device->CreateUnorderedAccessView(internal_state->resource.Get(), &uav_desc, &uav);
 
-			D3D11_MAPPED_SUBRESOURCE mappedResource = {};
-			HRESULT hr = immediateContext->Map(internal_state_dst->resource.Get(), 0, D3D11_MAP_READ, 0, &mappedResource);
-			bool result = SUCCEEDED(hr);
-			if (result)
+		if (SUCCEEDED(hr))
+		{
+			if (internal_state->uav == nullptr)
 			{
-				uint32_t cpystride = GetFormatStride(textureToDownload->desc.Format);
-				if (mappedResource.RowPitch / cpystride != textureToDownload->desc.Width)
-				{
-					assert(textureToDownload->desc.type == TextureDesc::TEXTURE_2D); // padded copy only implemented for texture2D!
-					assert(textureToDownload->desc.MipLevels == 1); // padded copy only implemented for single mip!
-
-					// Copy row by row without padding:
-					const uint32_t cpysize = textureToDownload->desc.Width * cpystride;
-					for (uint32_t i = 0; i < textureToDownload->desc.Height; ++i)
-					{
-						void* src = (void*)((size_t)mappedResource.pData + size_t(i * mappedResource.RowPitch));
-						void* dst = (void*)((size_t)dataDest + size_t(i * cpysize));
-						memcpy(dst, src, cpysize);
-					}
-				}
-				else
-				{
-					// Texture is not padded, copy the whole thing in one go:
-					uint32_t cpycount = std::max(1u, textureToDownload->desc.Width) * std::max(1u, textureToDownload->desc.Height) * std::max(1u, textureToDownload->desc.Depth);
-					uint32_t cpysize = cpycount * cpystride;
-					memcpy(dataDest, mappedResource.pData, cpysize);
-				}
-				immediateContext->Unmap(internal_state_dst->resource.Get(), 0);
+				internal_state->uav = uav;
+				return -1;
 			}
-
-			return result;
+			else
+			{
+				internal_state->subresources_uav.push_back(uav);
+				return int(internal_state->subresources_uav.size() - 1);
+			}
+		}
+		else
+		{
+			assert(0);
 		}
 	}
+	break;
+	default:
+		assert(0);
+		break;
+	}
+	return -1;
+}
 
-	return false;
+void GraphicsDevice_DX11::Map(const GPUResource* resource, Mapping* mapping) const
+{
+	auto internal_state = to_internal(resource);
+
+	D3D11_MAPPED_SUBRESOURCE map_result = {};
+	D3D11_MAP map_type = D3D11_MAP_READ_WRITE;
+	if (mapping->_flags & Mapping::FLAG_READ)
+	{
+		if (mapping->_flags & Mapping::FLAG_WRITE)
+		{
+			map_type = D3D11_MAP_READ_WRITE;
+		}
+		else
+		{
+			map_type = D3D11_MAP_READ;
+		}
+	}
+	else if (mapping->_flags & Mapping::FLAG_WRITE)
+	{
+		map_type = D3D11_MAP_WRITE_NO_OVERWRITE;
+	}
+	HRESULT hr = immediateContext->Map(internal_state->resource.Get(), 0, map_type, D3D11_MAP_FLAG_DO_NOT_WAIT, &map_result);
+	if (SUCCEEDED(hr))
+	{
+		mapping->data = map_result.pData;
+		mapping->rowpitch = map_result.RowPitch;
+	}
+	else
+	{
+		assert(0);
+		mapping->data = nullptr;
+		mapping->rowpitch = 0;
+	}
+}
+void GraphicsDevice_DX11::Unmap(const GPUResource* resource) const
+{
+	auto internal_state = to_internal(resource);
+	immediateContext->Unmap(internal_state->resource.Get(), 0);
+}
+void GraphicsDevice_DX11::QueryRead(const GPUQueryHeap* heap, uint32_t index, uint32_t count, uint64_t* results) const
+{
+	if (count == 0)
+		return;
+
+	auto internal_state = to_internal(heap);
+
+	const uint32_t _flags = D3D11_ASYNC_GETDATA_DONOTFLUSH;
+
+	HRESULT hr = S_OK;
+
+	assert(index + count <= internal_state->resources.size());
+	for (uint32_t i = 0; i < count; ++i)
+	{
+		ID3D11Query* QUERY = internal_state->resources[index + i].Get();
+
+		switch (heap->desc.type)
+		{
+		case GPU_QUERY_TYPE_TIMESTAMP:
+			hr = immediateContext->GetData(QUERY, &results[i], sizeof(uint64_t), _flags);
+			break;
+		case GPU_QUERY_TYPE_OCCLUSION:
+			hr = immediateContext->GetData(QUERY, &results[i], sizeof(uint64_t), _flags);
+			break;
+		case GPU_QUERY_TYPE_OCCLUSION_BINARY:
+		{
+			BOOL passed = FALSE;
+			hr = immediateContext->GetData(QUERY, &passed, sizeof(BOOL), _flags);
+			results[i] = (uint64_t)passed;
+			break;
+		}
+		}
+	}
+}
+
+void GraphicsDevice_DX11::SetCommonSampler(const StaticSampler* sam)
+{
+	common_samplers.push_back(*sam);
 }
 
 void GraphicsDevice_DX11::SetName(GPUResource* pResource, const char* name)
@@ -2358,56 +2585,18 @@ void GraphicsDevice_DX11::PresentBegin(CommandList cmd)
 }
 void GraphicsDevice_DX11::PresentEnd(CommandList cmd)
 {
-	// Execute deferred command lists:
-	{
-		CommandList cmd;
-		while (active_commandlists.pop_front(cmd))
-		{
-			deviceContexts[cmd]->FinishCommandList(false, &commandLists[cmd]);
-			immediateContext->ExecuteCommandList(commandLists[cmd].Get(), false);
-			commandLists[cmd].Reset();
-
-			free_commandlists.push_back(cmd);
-		}
-	}
+	SubmitCommandLists();
 
 	swapChain->Present(VSYNC, 0);
-
-
-	immediateContext->ClearState();
-
-	std::memset(prev_vs, 0, sizeof(prev_vs));
-	std::memset(prev_ps, 0, sizeof(prev_ps));
-	std::memset(prev_hs, 0, sizeof(prev_hs));
-	std::memset(prev_ds, 0, sizeof(prev_ds));
-	std::memset(prev_gs, 0, sizeof(prev_gs));
-	std::memset(prev_cs, 0, sizeof(prev_cs));
-	std::memset(prev_blendfactor, 0, sizeof(prev_blendfactor));
-	std::memset(prev_samplemask, 0, sizeof(prev_samplemask));
-	std::memset(prev_bs, 0, sizeof(prev_bs));
-	std::memset(prev_rs, 0, sizeof(prev_rs));
-	std::memset(prev_stencilRef, 0, sizeof(prev_stencilRef));
-	std::memset(prev_dss, 0, sizeof(prev_dss));
-	std::memset(prev_il, 0, sizeof(prev_il));
-	std::memset(prev_pt, 0, sizeof(prev_pt));
-
-	std::memset(raster_uavs, 0, sizeof(raster_uavs));
-	std::memset(raster_uavs_slot, 8, sizeof(raster_uavs_slot));
-	std::memset(raster_uavs_count, 0, sizeof(raster_uavs_count));
-
-	FRAMECOUNT++;
-
-	RESOLUTIONCHANGED = false;
 }
 
 
 CommandList GraphicsDevice_DX11::BeginCommandList()
 {
-	CommandList cmd;
-	if (!free_commandlists.pop_front(cmd))
+	CommandList cmd = cmd_count.fetch_add(1);
+	if (deviceContexts[cmd] == nullptr)
 	{
 		// need to create one more command list:
-		cmd = (CommandList)commandlist_count.fetch_add(1);
 		assert(cmd < COMMANDLIST_COUNT);
 
 		HRESULT hr = device->CreateDeferredContext(0, &deviceContexts[cmd]);
@@ -2426,11 +2615,19 @@ CommandList GraphicsDevice_DX11::BeginCommandList()
 		bool success = CreateBuffer(&frameAllocatorDesc, nullptr, &frame_allocators[cmd].buffer);
 		assert(success);
 		SetName(&frame_allocators[cmd].buffer, "frame_allocator");
-	}
 
+	}
 
 	BindPipelineState(nullptr, cmd);
 	BindComputeShader(nullptr, cmd);
+
+	for (int stage = 0; stage < SHADERSTAGE_COUNT; ++stage)
+	{
+		for (auto& sam : common_samplers)
+		{
+			BindSampler((SHADERSTAGE)stage, &sam.sampler, sam.slot, cmd);
+		}
+	}
 
 	D3D11_VIEWPORT vp = {};
 	vp.Width = (float)RESOLUTIONWIDTH;
@@ -2451,12 +2648,88 @@ CommandList GraphicsDevice_DX11::BeginCommandList()
 	}
 	deviceContexts[cmd]->RSSetScissorRects(8, pRects);
 
-	active_commandlists.push_back(cmd);
+	stencilRef[cmd] = 0;
+	blendFactor[cmd] = XMFLOAT4(1, 1, 1, 1);
+
+	prev_vs[cmd] = {};
+	prev_ps[cmd] = {};
+	prev_hs[cmd] = {};
+	prev_ds[cmd] = {};
+	prev_gs[cmd] = {};
+	prev_cs[cmd] = {};
+	prev_blendfactor[cmd] = {};
+	prev_samplemask[cmd] = {};
+	prev_bs[cmd] = {};
+	prev_rs[cmd] = {};
+	prev_stencilRef[cmd] = {};
+	prev_dss[cmd] = {};
+	prev_il[cmd] = {};
+	prev_pt[cmd] = {};
+
+	memset(raster_uavs[cmd], 0, sizeof(raster_uavs[cmd]));
+	raster_uavs_slot[cmd] = {};
+	raster_uavs_count[cmd] = {};
+
+	active_pso[cmd] = nullptr;
+	dirty_pso[cmd] = false;
+	active_renderpass[cmd] = nullptr;
+
 	return cmd;
+}
+void GraphicsDevice_DX11::SubmitCommandLists()
+{
+	const int disjoint_write = FRAMECOUNT % arraysize(disjointQueries);
+	const int disjoint_read = (FRAMECOUNT + 1) % arraysize(disjointQueries);
+	immediateContext->Begin(disjointQueries[disjoint_write].Get());
+
+	// Execute deferred command lists:
+	CommandList cmd_last = cmd_count.load();
+	cmd_count.store(0);
+	for (CommandList cmd = 0; cmd < cmd_last; ++cmd)
+	{
+		HRESULT hr = deviceContexts[cmd]->FinishCommandList(false, &commandLists[cmd]);
+		assert(SUCCEEDED(hr));
+		immediateContext->ExecuteCommandList(commandLists[cmd].Get(), false);
+		commandLists[cmd].Reset();
+	}
+	immediateContext->ClearState();
+
+	immediateContext->End(disjointQueries[disjoint_write].Get());
+	D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint;
+	HRESULT hr = immediateContext->GetData(
+		disjointQueries[disjoint_read].Get(),
+		&disjoint,
+		sizeof(disjoint),
+		D3D11_ASYNC_GETDATA_DONOTFLUSH
+	);
+	if (disjoint.Disjoint == FALSE && hr == S_OK)
+	{
+		TIMESTAMP_FREQUENCY = disjoint.Frequency;
+	}
+
+	FRAMECOUNT++;
+}
+void GraphicsDevice_DX11::StashCommandLists()
+{
+	cmd_count.store(0);
 }
 
 void GraphicsDevice_DX11::WaitForGPU()
 {
+	immediateContext->Flush();
+
+
+	D3D11_QUERY_DESC desc;
+	desc.MiscFlags = 0;
+	desc.Query = D3D11_QUERY_EVENT;
+
+	ComPtr<ID3D11Query> query;
+	HRESULT hr = device->CreateQuery(&desc, &query);
+	assert(SUCCEEDED(hr));
+	immediateContext->End(query.Get());
+	BOOL result;
+	while (immediateContext->GetData(query.Get(), &result, sizeof(result), 0) == S_FALSE);
+	assert(result == TRUE);
 }
 
 
@@ -2466,7 +2739,7 @@ void GraphicsDevice_DX11::commit_allocations(CommandList cmd)
 
 	if (frame_allocators[cmd].dirty)
 	{
-		auto internal_state = std::static_pointer_cast<Resource_DX11>(frame_allocators[cmd].buffer.internal_state);
+		auto internal_state = to_internal(&frame_allocators[cmd].buffer);
 		deviceContexts[cmd]->Unmap(internal_state->resource.Get(), 0);
 		frame_allocators[cmd].dirty = false;
 	}
@@ -2475,15 +2748,14 @@ void GraphicsDevice_DX11::commit_allocations(CommandList cmd)
 
 void GraphicsDevice_DX11::RenderPassBegin(const RenderPass* renderpass, CommandList cmd)
 {
+	active_renderpass[cmd] = renderpass;
 	const RenderPassDesc& desc = renderpass->GetDesc();
 
 	uint32_t rt_count = 0;
-	ID3D11RenderTargetView* RTVs[8] = {};
+	ID3D11RenderTargetView* RTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
 	ID3D11DepthStencilView* DSV = nullptr;
-	assert(desc.numAttachments < arraysize(RTVs) + 1);
-	for (uint32_t i = 0; i < desc.numAttachments; ++i)
+	for (auto& attachment : desc.attachments)
 	{
-		const RenderPassAttachment& attachment = desc.attachments[i];
 		const Texture* texture = attachment.texture;
 		int subresource = attachment.subresource;
 		auto internal_state = to_internal(texture);
@@ -2507,7 +2779,7 @@ void GraphicsDevice_DX11::RenderPassBegin(const RenderPass* renderpass, CommandL
 
 			rt_count++;
 		}
-		else
+		else if (attachment.type == RenderPassAttachment::DEPTH_STENCIL)
 		{
 			if (subresource < 0 || internal_state->subresources_dsv.empty())
 			{
@@ -2548,6 +2820,37 @@ void GraphicsDevice_DX11::RenderPassBegin(const RenderPass* renderpass, CommandL
 void GraphicsDevice_DX11::RenderPassEnd(CommandList cmd)
 {
 	deviceContexts[cmd]->OMSetRenderTargets(0, nullptr, nullptr);
+
+	// Perform resolves:
+	int dst_counter = 0;
+	for (auto& attachment : active_renderpass[cmd]->desc.attachments)
+	{
+		if (attachment.type == RenderPassAttachment::RESOLVE)
+		{
+			if (attachment.texture != nullptr)
+			{
+				auto dst_internal = to_internal(attachment.texture);
+
+				int src_counter = 0;
+				for (auto& src : active_renderpass[cmd]->desc.attachments)
+				{
+					if (src.type == RenderPassAttachment::RENDERTARGET && src.texture != nullptr)
+					{
+						if (src_counter == dst_counter)
+						{
+							auto src_internal = to_internal(src.texture);
+							deviceContexts[cmd]->ResolveSubresource(dst_internal->resource.Get(), 0, src_internal->resource.Get(), 0, _ConvertFormat(attachment.texture->desc.Format));
+							break;
+						}
+						src_counter++;
+					}
+				}
+			}
+
+			dst_counter++;
+		}
+	}
+	active_renderpass[cmd] = nullptr;
 }
 void GraphicsDevice_DX11::BindScissorRects(uint32_t numRects, const Rect* rects, CommandList cmd) {
 	assert(rects != nullptr);
@@ -2614,7 +2917,6 @@ void GraphicsDevice_DX11::BindResource(SHADERSTAGE stage, const GPUResource* res
 			deviceContexts[cmd]->CSSetShaderResources(slot, 1, &SRV);
 			break;
 		default:
-			assert(0);
 			break;
 		}
 	}
@@ -2649,7 +2951,6 @@ void GraphicsDevice_DX11::BindResources(SHADERSTAGE stage, const GPUResource *co
 		deviceContexts[cmd]->CSSetShaderResources(slot, count, srvs);
 		break;
 	default:
-		assert(0);
 		break;
 	}
 }
@@ -2752,7 +3053,6 @@ void GraphicsDevice_DX11::BindSampler(SHADERSTAGE stage, const Sampler* sampler,
 			deviceContexts[cmd]->CSSetSamplers(slot, 1, &SAM);
 			break;
 		default:
-			assert(0);
 			break;
 		}
 	}
@@ -2781,14 +3081,13 @@ void GraphicsDevice_DX11::BindConstantBuffer(SHADERSTAGE stage, const GPUBuffer*
 		deviceContexts[cmd]->CSSetConstantBuffers(slot, 1, &res);
 		break;
 	default:
-		assert(0);
 		break;
 	}
 }
 void GraphicsDevice_DX11::BindVertexBuffers(const GPUBuffer *const* vertexBuffers, uint32_t slot, uint32_t count, const uint32_t* strides, const uint32_t* offsets, CommandList cmd)
 {
 	assert(count <= 8);
-	ID3D11Buffer* res[8] = { 0 };
+	ID3D11Buffer* res[8] = {};
 	for (uint32_t i = 0; i < count; ++i)
 	{
 		res[i] = vertexBuffers[i] != nullptr && vertexBuffers[i]->IsValid() ? (ID3D11Buffer*)to_internal(vertexBuffers[i])->resource.Get() : nullptr;
@@ -2813,107 +3112,11 @@ void GraphicsDevice_DX11::BindBlendFactor(float r, float g, float b, float a, Co
 }
 void GraphicsDevice_DX11::BindPipelineState(const PipelineState* pso, CommandList cmd)
 {
-	const PipelineStateDesc& desc = pso != nullptr ? pso->GetDesc() : PipelineStateDesc();
+	if (active_pso[cmd] == pso)
+		return;
 
-	ID3D11VertexShader* vs = desc.vs == nullptr ? nullptr : static_cast<VertexShader_DX11*>(desc.vs->internal_state.get())->resource.Get();
-	if (vs != prev_vs[cmd])
-	{
-		deviceContexts[cmd]->VSSetShader(vs, nullptr, 0);
-		prev_vs[cmd] = vs;
-	}
-	ID3D11PixelShader* ps = desc.ps == nullptr ? nullptr : static_cast<PixelShader_DX11*>(desc.ps->internal_state.get())->resource.Get();
-	if (ps != prev_ps[cmd])
-	{
-		deviceContexts[cmd]->PSSetShader(ps, nullptr, 0);
-		prev_ps[cmd] = ps;
-	}
-	ID3D11HullShader* hs = desc.hs == nullptr ? nullptr : static_cast<HullShader_DX11*>(desc.hs->internal_state.get())->resource.Get();
-	if (hs != prev_hs[cmd])
-	{
-		deviceContexts[cmd]->HSSetShader(hs, nullptr, 0);
-		prev_hs[cmd] = hs;
-	}
-	ID3D11DomainShader* ds = desc.ds == nullptr ? nullptr : static_cast<DomainShader_DX11*>(desc.ds->internal_state.get())->resource.Get();
-	if (ds != prev_ds[cmd])
-	{
-		deviceContexts[cmd]->DSSetShader(ds, nullptr, 0);
-		prev_ds[cmd] = ds;
-	}
-	ID3D11GeometryShader* gs = desc.gs == nullptr ? nullptr : static_cast<GeometryShader_DX11*>(desc.gs->internal_state.get())->resource.Get();
-	if (gs != prev_gs[cmd])
-	{
-		deviceContexts[cmd]->GSSetShader(gs, nullptr, 0);
-		prev_gs[cmd] = gs;
-	}
-
-	ID3D11BlendState* bs = desc.bs == nullptr ? nullptr : to_internal(desc.bs)->resource.Get();
-	if (bs != prev_bs[cmd] || desc.sampleMask != prev_samplemask[cmd] ||
-		blendFactor[cmd].x != prev_blendfactor[cmd].x ||
-		blendFactor[cmd].y != prev_blendfactor[cmd].y ||
-		blendFactor[cmd].z != prev_blendfactor[cmd].z ||
-		blendFactor[cmd].w != prev_blendfactor[cmd].w
-		)
-	{
-		const float fact[4] = { blendFactor[cmd].x, blendFactor[cmd].y, blendFactor[cmd].z, blendFactor[cmd].w };
-		deviceContexts[cmd]->OMSetBlendState(bs, fact, desc.sampleMask);
-		prev_bs[cmd] = bs;
-		prev_blendfactor[cmd] = blendFactor[cmd];
-		prev_samplemask[cmd] = desc.sampleMask;
-	}
-
-	ID3D11RasterizerState* rs = desc.rs == nullptr ? nullptr : to_internal(desc.rs)->resource.Get();
-	if (rs != prev_rs[cmd])
-	{
-		deviceContexts[cmd]->RSSetState(rs);
-		prev_rs[cmd] = rs;
-	}
-
-	ID3D11DepthStencilState* dss = desc.dss == nullptr ? nullptr : to_internal(desc.dss)->resource.Get();
-	if (dss != prev_dss[cmd] || stencilRef[cmd] != prev_stencilRef[cmd])
-	{
-		deviceContexts[cmd]->OMSetDepthStencilState(dss, stencilRef[cmd]);
-		prev_dss[cmd] = dss;
-		prev_stencilRef[cmd] = stencilRef[cmd];
-	}
-
-	ID3D11InputLayout* il = desc.il == nullptr ? nullptr : to_internal(desc.il)->resource.Get();
-	if (il != prev_il[cmd])
-	{
-		deviceContexts[cmd]->IASetInputLayout(il);
-		prev_il[cmd] = il;
-	}
-
-	if (prev_pt[cmd] != desc.pt)
-	{
-		D3D11_PRIMITIVE_TOPOLOGY d3dType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-		switch (desc.pt)
-		{
-		case TRIANGLELIST:
-			d3dType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-			break;
-		case TRIANGLESTRIP:
-			d3dType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
-			break;
-		case POINTLIST:
-			d3dType = D3D11_PRIMITIVE_TOPOLOGY_POINTLIST;
-			break;
-		case LINELIST:
-			d3dType = D3D11_PRIMITIVE_TOPOLOGY_LINELIST;
-			break;
-		case LINESTRIP:
-			d3dType = D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP;
-			break;
-		case PATCHLIST:
-			d3dType = D3D11_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
-			break;
-		default:
-			d3dType = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
-			break;
-		};
-		deviceContexts[cmd]->IASetPrimitiveTopology(d3dType);
-
-		prev_pt[cmd] = desc.pt;
-	}
+	active_pso[cmd] = pso;
+	dirty_pso[cmd] = true;
 }
 void GraphicsDevice_DX11::BindComputeShader(const Shader* cs, CommandList cmd)
 {
@@ -2922,40 +3125,54 @@ void GraphicsDevice_DX11::BindComputeShader(const Shader* cs, CommandList cmd)
 	{
 		deviceContexts[cmd]->CSSetShader(_cs, nullptr, 0);
 		prev_cs[cmd] = _cs;
+
+		if (cs != nullptr)
+		{
+			for (auto& x : cs->auto_samplers)
+			{
+				BindSampler(CS, &x.sampler, x.slot, cmd);
+			}
+		}
 	}
 }
 void GraphicsDevice_DX11::Draw(uint32_t vertexCount, uint32_t startVertexLocation, CommandList cmd) 
 {
+	pso_validate(cmd);
 	commit_allocations(cmd);
 
 	deviceContexts[cmd]->Draw(vertexCount, startVertexLocation);
 }
 void GraphicsDevice_DX11::DrawIndexed(uint32_t indexCount, uint32_t startIndexLocation, uint32_t baseVertexLocation, CommandList cmd)
 {
+	pso_validate(cmd);
 	commit_allocations(cmd);
 
 	deviceContexts[cmd]->DrawIndexed(indexCount, startIndexLocation, baseVertexLocation);
 }
 void GraphicsDevice_DX11::DrawInstanced(uint32_t vertexCount, uint32_t instanceCount, uint32_t startVertexLocation, uint32_t startInstanceLocation, CommandList cmd) 
 {
+	pso_validate(cmd);
 	commit_allocations(cmd);
 
 	deviceContexts[cmd]->DrawInstanced(vertexCount, instanceCount, startVertexLocation, startInstanceLocation);
 }
 void GraphicsDevice_DX11::DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t startIndexLocation, uint32_t baseVertexLocation, uint32_t startInstanceLocation, CommandList cmd)
 {
+	pso_validate(cmd);
 	commit_allocations(cmd);
 
 	deviceContexts[cmd]->DrawIndexedInstanced(indexCount, instanceCount, startIndexLocation, baseVertexLocation, startInstanceLocation);
 }
 void GraphicsDevice_DX11::DrawInstancedIndirect(const GPUBuffer* args, uint32_t args_offset, CommandList cmd)
 {
+	pso_validate(cmd);
 	commit_allocations(cmd);
 
 	deviceContexts[cmd]->DrawInstancedIndirect((ID3D11Buffer*)to_internal(args)->resource.Get(), args_offset);
 }
 void GraphicsDevice_DX11::DrawIndexedInstancedIndirect(const GPUBuffer* args, uint32_t args_offset, CommandList cmd)
 {
+	pso_validate(cmd);
 	commit_allocations(cmd);
 
 	deviceContexts[cmd]->DrawIndexedInstancedIndirect((ID3D11Buffer*)to_internal(args)->resource.Get(), args_offset);
@@ -2978,21 +3195,6 @@ void GraphicsDevice_DX11::CopyResource(const GPUResource* pDst, const GPUResourc
 	auto internal_state_src = to_internal(pSrc);
 	auto internal_state_dst = to_internal(pDst);
 	deviceContexts[cmd]->CopyResource(internal_state_dst->resource.Get(), internal_state_src->resource.Get());
-}
-void GraphicsDevice_DX11::CopyTexture2D_Region(const Texture* pDst, uint32_t dstMip, uint32_t dstX, uint32_t dstY, const Texture* pSrc, uint32_t srcMip, CommandList cmd)
-{
-	assert(pDst != nullptr && pSrc != nullptr);
-	auto internal_state_src = to_internal(pSrc);
-	auto internal_state_dst = to_internal(pDst);
-	deviceContexts[cmd]->CopySubresourceRegion(internal_state_dst->resource.Get(), D3D11CalcSubresource(dstMip, 0, pDst->GetDesc().MipLevels), dstX, dstY, 0,
-		internal_state_src->resource.Get(), D3D11CalcSubresource(srcMip, 0, pSrc->GetDesc().MipLevels), nullptr);
-}
-void GraphicsDevice_DX11::MSAAResolve(const Texture* pDst, const Texture* pSrc, CommandList cmd)
-{
-	assert(pDst != nullptr && pSrc != nullptr);
-	auto internal_state_src = to_internal(pSrc);
-	auto internal_state_dst = to_internal(pDst);
-	deviceContexts[cmd]->ResolveSubresource(internal_state_dst->resource.Get(), 0, internal_state_src->resource.Get(), 0, _ConvertFormat(pDst->desc.Format));
 }
 void GraphicsDevice_DX11::UpdateBuffer(const GPUBuffer* buffer, const void* data, CommandList cmd, int dataSize)
 {
@@ -3032,51 +3234,15 @@ void GraphicsDevice_DX11::UpdateBuffer(const GPUBuffer* buffer, const void* data
 		deviceContexts[cmd]->UpdateSubresource(internal_state->resource.Get(), 0, &box, data, 0, 0);
 	}
 }
-
-void GraphicsDevice_DX11::QueryBegin(const GPUQuery* query, CommandList cmd)
+void GraphicsDevice_DX11::QueryBegin(const GPUQueryHeap* heap, uint32_t index, CommandList cmd)
 {
-	auto internal_state = to_internal(query);
-	deviceContexts[cmd]->Begin(internal_state->resource.Get());
+	auto internal_state = to_internal(heap);
+	deviceContexts[cmd]->Begin(internal_state->resources[index].Get());
 }
-void GraphicsDevice_DX11::QueryEnd(const GPUQuery* query, CommandList cmd)
+void GraphicsDevice_DX11::QueryEnd(const GPUQueryHeap* heap, uint32_t index, CommandList cmd)
 {
-	auto internal_state = to_internal(query);
-	deviceContexts[cmd]->End(internal_state->resource.Get());
-}
-bool GraphicsDevice_DX11::QueryRead(const GPUQuery* query, GPUQueryResult* result)
-{
-	const uint32_t _flags = D3D11_ASYNC_GETDATA_DONOTFLUSH;
-
-	auto internal_state = to_internal(query);
-	ID3D11Query* QUERY = internal_state->resource.Get();
-
-	HRESULT hr = S_OK;
-	switch (query->desc.Type)
-	{
-	case GPU_QUERY_TYPE_TIMESTAMP:
-		hr = immediateContext->GetData(QUERY, &result->result_timestamp, sizeof(uint64_t), _flags);
-		break;
-	case GPU_QUERY_TYPE_TIMESTAMP_DISJOINT:
-	{
-		D3D11_QUERY_DATA_TIMESTAMP_DISJOINT _temp;
-		hr = immediateContext->GetData(QUERY, &_temp, sizeof(_temp), _flags);
-		result->result_timestamp_frequency = _temp.Frequency;
-	}
-	break;
-	case GPU_QUERY_TYPE_EVENT:
-	case GPU_QUERY_TYPE_OCCLUSION:
-		hr = immediateContext->GetData(QUERY, &result->result_passed_sample_count, sizeof(uint64_t), _flags);
-		break;
-	case GPU_QUERY_TYPE_OCCLUSION_PREDICATE:
-	{
-		BOOL passed = FALSE;
-		hr = immediateContext->GetData(QUERY, &passed, sizeof(BOOL), _flags);
-		result->result_passed_sample_count = (uint64_t)passed;
-		break;
-	}
-	}
-
-	return hr != S_FALSE;
+	auto internal_state = to_internal(heap);
+	deviceContexts[cmd]->End(internal_state->resources[index].Get());
 }
 
 GraphicsDevice::GPUAllocation GraphicsDevice_DX11::AllocateGPU(size_t dataSize, CommandList cmd)
@@ -3092,13 +3258,13 @@ GraphicsDevice::GPUAllocation GraphicsDevice_DX11::AllocateGPU(size_t dataSize, 
 	{
 		// If allocation too large, grow the allocator:
 		allocator.buffer.desc.ByteWidth = uint32_t((dataSize + 1) * 2);
-		bool success = CreateBuffer(&allocator.buffer.desc, nullptr, &frame_allocators[cmd].buffer);
+		bool success = CreateBuffer(&allocator.buffer.desc, nullptr, &allocator.buffer);
 		assert(success);
-		SetName(&frame_allocators[cmd].buffer, "frame_allocator");
+		SetName(&allocator.buffer, "frame_allocator");
 		allocator.byteOffset = 0;
 	}
 
-	auto internal_state = std::static_pointer_cast<Resource_DX11>(allocator.buffer.internal_state);
+	auto internal_state = to_internal(&allocator.buffer);
 
 	allocator.dirty = true;
 
@@ -3143,3 +3309,5 @@ void GraphicsDevice_DX11::SetMarker(const char* name, CommandList cmd)
 }
 
 }
+
+#endif // WICKEDENGINE_BUILD_DX11

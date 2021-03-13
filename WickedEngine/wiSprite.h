@@ -5,22 +5,35 @@
 #include "wiRandom.h"
 
 #include <memory>
+#include <string>
 
 class wiSprite
 {
 private:
+	enum FLAGS
+	{
+		EMPTY = 0,
+		HIDDEN = 1 << 0,
+		DISABLE_UPDATE = 1 << 1,
+	};
+	uint32_t _flags = EMPTY;
+
 	std::string textureName, maskName;
-	std::shared_ptr<wiResource> textureResource;
-	std::shared_ptr<wiResource> maskResource;
 public:
 	wiSprite(const std::string& newTexture = "", const std::string& newMask = "");
 
 	virtual void FixedUpdate();
 	virtual void Update(float dt);
-	void Draw(wiGraphics::CommandList cmd) const;
-	void DrawNormal(wiGraphics::CommandList cmd) const;
+	virtual void Draw(wiGraphics::CommandList cmd) const;
+
+	constexpr void SetHidden(bool value = true) { if (value) { _flags |= HIDDEN; } else { _flags &= ~HIDDEN; } }
+	constexpr bool IsHidden() const { return _flags & HIDDEN; }
+	constexpr void SetDisableUpdate(bool value = true) { if (value) { _flags |= DISABLE_UPDATE; } else { _flags &= ~DISABLE_UPDATE; } }
+	constexpr bool IsDisableUpdate() const { return _flags & DISABLE_UPDATE; }
 
 	wiImageParams params;
+	std::shared_ptr<wiResource> textureResource;
+	std::shared_ptr<wiResource> maskResource;
 
 	struct Anim
 	{
@@ -79,13 +92,12 @@ public:
 		WobbleAnim wobbleAnim;
 	};
 	Anim anim;
-	
-	const wiGraphics::Texture* getTexture() { return textureResource->texture; }
-	void setTexture(const wiGraphics::Texture* texture)
+
+	const wiGraphics::Texture* getTexture() const
 	{
-		textureResource = std::make_shared<wiResource>();
-		textureResource->texture = texture;
-		textureResource->type = wiResource::IMAGE;
+		if(textureResource != nullptr)
+			return &textureResource->texture;
+		return nullptr;
 	}
 };
 

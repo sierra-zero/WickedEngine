@@ -6,7 +6,9 @@
 #include "wiArchive.h"
 #include "wiRenderer.h"
 #include "wiJobSystem.h"
-#include "wiSpinlock.h"
+#include "wiSpinLock.h"
+#include "wiHelper.h"
+#include "wiRenderer.h"
 
 #include <functional>
 #include <unordered_map>
@@ -203,9 +205,17 @@ namespace wiScene
 
 		XMVECTOR T = XMVectorCatmullRom(aT, bT, cT, dT, t);
 
-		// Catmull-rom has issues with full rotation for quaternions (todo):
-		XMVECTOR R = XMVectorCatmullRom(aR, bR, cR, dR, t);
-		R = XMQuaternionNormalize(R);
+		XMVECTOR setupA;
+		XMVECTOR setupB;
+		XMVECTOR setupC;
+
+		aR = XMQuaternionNormalize(aR);
+		bR = XMQuaternionNormalize(bR);
+		cR = XMQuaternionNormalize(cR);
+		dR = XMQuaternionNormalize(dR);
+
+		XMQuaternionSquadSetup(&setupA, &setupB, &setupC, aR, bR, cR, dR);
+		XMVECTOR R = XMQuaternionSquad(bR, setupA, setupB, setupC, t);
 
 		XMVECTOR S = XMVectorCatmullRom(aS, bS, cS, dS, t);
 
@@ -214,103 +224,151 @@ namespace wiScene
 		XMStoreFloat3(&scale_local, S);
 	}
 
-	const Texture* MaterialComponent::GetBaseColorMap() const
+	void MaterialComponent::WriteShaderMaterial(ShaderMaterial* dest) const
 	{
-		if (baseColorMap != nullptr)
-		{
-			return baseColorMap->texture;
-		}
-		return wiTextureHelper::getWhite();
-	}
-	const Texture* MaterialComponent::GetNormalMap() const
-	{
-		if (normalMap != nullptr)
-		{
-			return normalMap->texture;
-		}
-		return nullptr;
-	}
-	const Texture* MaterialComponent::GetSurfaceMap() const
-	{
-		if (surfaceMap != nullptr)
-		{
-			return surfaceMap->texture;
-		}
-		return wiTextureHelper::getWhite();
-	}
-	const Texture* MaterialComponent::GetDisplacementMap() const
-	{
-		if (displacementMap != nullptr)
-		{
-			return displacementMap->texture;
-		}
-		return wiTextureHelper::getWhite();
-	}
-	const Texture* MaterialComponent::GetEmissiveMap() const
-	{
-		if (emissiveMap != nullptr)
-		{
-			return emissiveMap->texture;
-		}
-		return wiTextureHelper::getWhite();
-	}
-	const Texture* MaterialComponent::GetOcclusionMap() const
-	{
-		if (occlusionMap != nullptr)
-		{
-			return occlusionMap->texture;
-		}
-		return wiTextureHelper::getWhite();
-	}
-	ShaderMaterial MaterialComponent::CreateShaderMaterial() const
-	{
-		ShaderMaterial retVal;
-		retVal.baseColor = baseColor;
-		retVal.emissiveColor = emissiveColor;
-		retVal.texMulAdd = texMulAdd;
-		retVal.roughness = roughness;
-		retVal.reflectance = reflectance;
-		retVal.metalness = metalness;
-		retVal.refractionIndex = refractionIndex;
-		retVal.subsurfaceScattering = subsurfaceScattering;
-		retVal.normalMapStrength = (normalMap == nullptr ? 0 : normalMapStrength);
-		retVal.normalMapFlip = (_flags & MaterialComponent::FLIP_NORMALMAP ? -1.0f : 1.0f);
-		retVal.parallaxOcclusionMapping = parallaxOcclusionMapping;
-		retVal.displacementMapping = displacementMapping;
-		retVal.uvset_baseColorMap = baseColorMap == nullptr ? -1 : (int)uvset_baseColorMap;
-		retVal.uvset_surfaceMap = surfaceMap == nullptr ? -1 : (int)uvset_surfaceMap;
-		retVal.uvset_normalMap = normalMap == nullptr ? -1 : (int)uvset_normalMap;
-		retVal.uvset_displacementMap = displacementMap == nullptr ? -1 : (int)uvset_displacementMap;
-		retVal.uvset_emissiveMap = emissiveMap == nullptr ? -1 : (int)uvset_emissiveMap;
-		retVal.uvset_occlusionMap = occlusionMap == nullptr ? -1 : (int)uvset_occlusionMap;
-		retVal.options = 0;
+		dest->baseColor = baseColor;
+		dest->specularColor = specularColor;
+		dest->emissiveColor = emissiveColor;
+		dest->texMulAdd = texMulAdd;
+		dest->roughness = roughness;
+		dest->reflectance = reflectance;
+		dest->metalness = metalness;
+		dest->refraction = refraction;
+		dest->normalMapStrength = (textures[NORMALMAP].resource == nullptr ? 0 : normalMapStrength);
+		dest->parallaxOcclusionMapping = parallaxOcclusionMapping;
+		dest->displacementMapping = displacementMapping;
+		dest->subsurfaceScattering = subsurfaceScattering;
+		dest->subsurfaceScattering.x *= dest->subsurfaceScattering.w;
+		dest->subsurfaceScattering.y *= dest->subsurfaceScattering.w;
+		dest->subsurfaceScattering.z *= dest->subsurfaceScattering.w;
+		dest->subsurfaceScattering_inv.x = 1.0f / ((1 + dest->subsurfaceScattering.x) * (1 + dest->subsurfaceScattering.x));
+		dest->subsurfaceScattering_inv.y = 1.0f / ((1 + dest->subsurfaceScattering.y) * (1 + dest->subsurfaceScattering.y));
+		dest->subsurfaceScattering_inv.z = 1.0f / ((1 + dest->subsurfaceScattering.z) * (1 + dest->subsurfaceScattering.z));
+		dest->subsurfaceScattering_inv.w = 1.0f / ((1 + dest->subsurfaceScattering.w) * (1 + dest->subsurfaceScattering.w));
+		dest->uvset_baseColorMap = textures[BASECOLORMAP].GetUVSet();
+		dest->uvset_surfaceMap = textures[SURFACEMAP].GetUVSet();
+		dest->uvset_normalMap = textures[NORMALMAP].GetUVSet();
+		dest->uvset_displacementMap = textures[DISPLACEMENTMAP].GetUVSet();
+		dest->uvset_emissiveMap = textures[EMISSIVEMAP].GetUVSet();
+		dest->uvset_occlusionMap = textures[OCCLUSIONMAP].GetUVSet();
+		dest->uvset_transmissionMap = textures[TRANSMISSIONMAP].GetUVSet();
+		dest->uvset_sheenColorMap = textures[SHEENCOLORMAP].GetUVSet();
+		dest->uvset_sheenRoughnessMap = textures[SHEENROUGHNESSMAP].GetUVSet();
+		dest->uvset_clearcoatMap = textures[CLEARCOATMAP].GetUVSet();
+		dest->uvset_clearcoatRoughnessMap = textures[CLEARCOATROUGHNESSMAP].GetUVSet();
+		dest->uvset_clearcoatNormalMap = textures[CLEARCOATNORMALMAP].GetUVSet();
+		dest->sheenColor = sheenColor;
+		dest->sheenRoughness = sheenRoughness;
+		dest->clearcoat = clearcoat;
+		dest->clearcoatRoughness = clearcoatRoughness;
+		dest->alphaTest = 1 - alphaRef + 1.0f / 256.0f; // 256 so that it is just about smaller than 1 unorm unit (1.0/255.0)
+		dest->layerMask = layerMask;
+		dest->transmission = transmission;
+		dest->options = 0;
 		if (IsUsingVertexColors())
 		{
-			retVal.options |= SHADERMATERIAL_OPTION_BIT_USE_VERTEXCOLORS;
+			dest->options |= SHADERMATERIAL_OPTION_BIT_USE_VERTEXCOLORS;
 		}
 		if (IsUsingSpecularGlossinessWorkflow())
 		{
-			retVal.options |= SHADERMATERIAL_OPTION_BIT_SPECULARGLOSSINESS_WORKFLOW;
+			dest->options |= SHADERMATERIAL_OPTION_BIT_SPECULARGLOSSINESS_WORKFLOW;
 		}
 		if (IsOcclusionEnabled_Primary())
 		{
-			retVal.options |= SHADERMATERIAL_OPTION_BIT_OCCLUSION_PRIMARY;
+			dest->options |= SHADERMATERIAL_OPTION_BIT_OCCLUSION_PRIMARY;
 		}
 		if (IsOcclusionEnabled_Secondary())
 		{
-			retVal.options |= SHADERMATERIAL_OPTION_BIT_OCCLUSION_SECONDARY;
+			dest->options |= SHADERMATERIAL_OPTION_BIT_OCCLUSION_SECONDARY;
 		}
 		if (IsUsingWind())
 		{
-			retVal.options |= SHADERMATERIAL_OPTION_BIT_USE_WIND;
+			dest->options |= SHADERMATERIAL_OPTION_BIT_USE_WIND;
+		}
+		if (IsReceiveShadow())
+		{
+			dest->options |= SHADERMATERIAL_OPTION_BIT_RECEIVE_SHADOW;
 		}
 
-		retVal.baseColorAtlasMulAdd = XMFLOAT4(0, 0, 0, 0);
-		retVal.surfaceMapAtlasMulAdd = XMFLOAT4(0, 0, 0, 0);
-		retVal.emissiveMapAtlasMulAdd = XMFLOAT4(0, 0, 0, 0);
-		retVal.normalMapAtlasMulAdd = XMFLOAT4(0, 0, 0, 0);
+		GraphicsDevice* device = wiRenderer::GetDevice();
+		dest->texture_basecolormap_index = device->GetDescriptorIndex(textures[BASECOLORMAP].GetGPUResource(), SRV);
+		dest->texture_surfacemap_index = device->GetDescriptorIndex(textures[SURFACEMAP].GetGPUResource(), SRV);
+		dest->texture_emissivemap_index = device->GetDescriptorIndex(textures[EMISSIVEMAP].GetGPUResource(), SRV);
+		dest->texture_normalmap_index = device->GetDescriptorIndex(textures[NORMALMAP].GetGPUResource(), SRV);
+		dest->texture_displacementmap_index = device->GetDescriptorIndex(textures[DISPLACEMENTMAP].GetGPUResource(), SRV);
+		dest->texture_occlusionmap_index = device->GetDescriptorIndex(textures[OCCLUSIONMAP].GetGPUResource(), SRV);
+		dest->texture_transmissionmap_index = device->GetDescriptorIndex(textures[TRANSMISSIONMAP].GetGPUResource(), SRV);
+		dest->texture_sheencolormap_index = device->GetDescriptorIndex(textures[SHEENCOLORMAP].GetGPUResource(), SRV);
+		dest->texture_sheenroughnessmap_index = device->GetDescriptorIndex(textures[SHEENROUGHNESSMAP].GetGPUResource(), SRV);
+		dest->texture_clearcoatmap_index = device->GetDescriptorIndex(textures[CLEARCOATMAP].GetGPUResource(), SRV);
+		dest->texture_clearcoatroughnessmap_index = device->GetDescriptorIndex(textures[CLEARCOATROUGHNESSMAP].GetGPUResource(), SRV);
+		dest->texture_clearcoatnormalmap_index = device->GetDescriptorIndex(textures[CLEARCOATNORMALMAP].GetGPUResource(), SRV);
 
-		return retVal;
+		dest->baseColorAtlasMulAdd = XMFLOAT4(0, 0, 0, 0);
+		dest->surfaceMapAtlasMulAdd = XMFLOAT4(0, 0, 0, 0);
+		dest->emissiveMapAtlasMulAdd = XMFLOAT4(0, 0, 0, 0);
+		dest->normalMapAtlasMulAdd = XMFLOAT4(0, 0, 0, 0);
+	}
+	void MaterialComponent::WriteTextures(const wiGraphics::GPUResource** dest, int count) const
+	{
+		count = std::min(count, (int)TEXTURESLOT_COUNT);
+		for (int i = 0; i < count; ++i)
+		{
+			dest[i] = textures[i].GetGPUResource();
+		}
+	}
+	uint32_t MaterialComponent::GetRenderTypes() const
+	{
+		if (IsCustomShader() && customShaderID < (int)wiRenderer::GetCustomShaders().size())
+		{
+			auto& customShader = wiRenderer::GetCustomShaders()[customShaderID];
+			return customShader.renderTypeFlags;
+		}
+		if (shaderType == SHADERTYPE_WATER)
+		{
+			return RENDERTYPE_TRANSPARENT | RENDERTYPE_WATER;
+		}
+		if (transmission > 0)
+		{
+			return RENDERTYPE_TRANSPARENT;
+		}
+		if (userBlendMode == BLENDMODE_OPAQUE)
+		{
+			return RENDERTYPE_OPAQUE;
+		}
+		return RENDERTYPE_TRANSPARENT;
+	}
+	void MaterialComponent::CreateRenderData()
+	{
+		for (auto& x : textures)
+		{
+			if (!x.name.empty())
+			{
+				x.resource = wiResourceManager::Load(x.name, wiResourceManager::IMPORT_RETAIN_FILEDATA);
+			}
+		}
+
+		ShaderMaterial shadermat;
+		WriteShaderMaterial(&shadermat);
+
+		SubresourceData data;
+		data.pSysMem = &shadermat;
+
+		GraphicsDevice* device = wiRenderer::GetDevice();
+		GPUBufferDesc desc;
+		desc.Usage = USAGE_DEFAULT;
+		desc.BindFlags = BIND_CONSTANT_BUFFER;
+		if (device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_BINDLESS_DESCRIPTORS))
+		{
+			desc.BindFlags |= BIND_SHADER_RESOURCE;
+			desc.MiscFlags = RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+		}
+		desc.ByteWidth = sizeof(MaterialCB);
+		device->CreateBuffer(&desc, &data, &constantBuffer);
+	}
+	uint32_t MaterialComponent::GetStencilRef() const
+	{
+		return wiRenderer::CombineStencilrefs(engineStencilRef, userStencilRef);
 	}
 
 	void MeshComponent::CreateRenderData()
@@ -319,47 +377,40 @@ namespace wiScene
 
 		// Create index buffer GPU data:
 		{
-			uint32_t counter = 0;
-			uint8_t stride;
-			void* gpuIndexData;
-			if (GetIndexFormat() == INDEXFORMAT_32BIT)
-			{
-				gpuIndexData = new uint32_t[indices.size()];
-				stride = sizeof(uint32_t);
-
-				for (auto& x : indices)
-				{
-					static_cast<uint32_t*>(gpuIndexData)[counter++] = static_cast<uint32_t>(x);
-				}
-
-			}
-			else
-			{
-				gpuIndexData = new uint16_t[indices.size()];
-				stride = sizeof(uint16_t);
-
-				for (auto& x : indices)
-				{
-					static_cast<uint16_t*>(gpuIndexData)[counter++] = static_cast<uint16_t>(x);
-				}
-
-			}
-
-
 			GPUBufferDesc bd;
 			bd.Usage = USAGE_IMMUTABLE;
 			bd.CPUAccessFlags = 0;
 			bd.BindFlags = BIND_INDEX_BUFFER | BIND_SHADER_RESOURCE;
 			bd.MiscFlags = 0;
-			bd.StructureByteStride = stride;
-			bd.Format = GetIndexFormat() == INDEXFORMAT_16BIT ? FORMAT_R16_UINT : FORMAT_R32_UINT;
 
-			SubresourceData InitData;
-			InitData.pSysMem = gpuIndexData;
-			bd.ByteWidth = (uint32_t)(stride * indices.size());
-			device->CreateBuffer(&bd, &InitData, &indexBuffer);
+			SubresourceData initData;
 
-			delete[] gpuIndexData;
+			if (GetIndexFormat() == INDEXFORMAT_32BIT)
+			{
+				bd.StructureByteStride = sizeof(uint32_t);
+				bd.Format = FORMAT_R32_UINT;
+				bd.ByteWidth = uint32_t(sizeof(uint32_t) * indices.size());
+
+				// Use indices directly since vector is in correct format
+				static_assert(std::is_same<decltype(indices)::value_type, uint32_t>::value, "indices not in INDEXFORMAT_32BIT");
+				initData.pSysMem = indices.data();
+
+				device->CreateBuffer(&bd, &initData, &indexBuffer);
+				device->SetName(&indexBuffer, "indexBuffer_32bit");
+			}
+			else
+			{
+				bd.StructureByteStride = sizeof(uint16_t);
+				bd.Format = FORMAT_R16_UINT;
+				bd.ByteWidth = uint32_t(sizeof(uint16_t) * indices.size());
+
+				std::vector<uint16_t> gpuIndexData(indices.size());
+				std::copy(indices.begin(), indices.end(), gpuIndexData.begin());
+				initData.pSysMem = gpuIndexData.data();
+
+				device->CreateBuffer(&bd, &initData, &indexBuffer);
+				device->SetName(&indexBuffer, "indexBuffer_16bit");
+			}
 		}
 
 
@@ -368,12 +419,18 @@ namespace wiScene
 
 		// vertexBuffer - POSITION + NORMAL + WIND:
 		{
+		    if (!targets.empty())
+		    {
+				vertex_positions_morphed.resize(vertex_positions.size());
+				SetDirtyMorph();
+		    }
+
 			std::vector<Vertex_POS> vertices(vertex_positions.size());
 			for (size_t i = 0; i < vertices.size(); ++i)
 			{
 				const XMFLOAT3& pos = vertex_positions[i];
-				XMFLOAT3& nor = vertex_normals.empty() ? XMFLOAT3(1, 1, 1) : vertex_normals[i];
-				XMStoreFloat3(&nor, XMVector3Normalize(XMLoadFloat3(&nor)));
+			    XMFLOAT3 nor = vertex_normals.empty() ? XMFLOAT3(1, 1, 1) : vertex_normals[i];
+			    XMStoreFloat3(&nor, XMVector3Normalize(XMLoadFloat3(&nor)));
 				const uint8_t wind = vertex_windweights.empty() ? 0xFF : vertex_windweights[i];
 				vertices[i].FromFULL(pos, nor, wind);
 
@@ -386,11 +443,111 @@ namespace wiScene
 			bd.CPUAccessFlags = 0;
 			bd.BindFlags = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE;
 			bd.MiscFlags = RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+			if (device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_RAYTRACING))
+			{
+				bd.MiscFlags |= RESOURCE_MISC_RAY_TRACING;
+			}
 			bd.ByteWidth = (uint32_t)(sizeof(Vertex_POS) * vertices.size());
 
 			SubresourceData InitData;
 			InitData.pSysMem = vertices.data();
 			device->CreateBuffer(&bd, &InitData, &vertexBuffer_POS);
+			device->SetName(&vertexBuffer_POS, "vertexBuffer_POS");
+		}
+
+		// vertexBuffer - TANGENTS
+		if(!vertex_uvset_0.empty())
+		{
+			if (vertex_tangents.empty())
+			{
+				// Generate tangents if not found:
+				vertex_tangents.resize(vertex_positions.size());
+
+				for (size_t i = 0; i < indices.size(); i += 3)
+				{
+					const uint32_t i0 = indices[i + 0];
+					const uint32_t i1 = indices[i + 1];
+					const uint32_t i2 = indices[i + 2];
+
+					const XMFLOAT3 v0 = vertex_positions[i0];
+					const XMFLOAT3 v1 = vertex_positions[i1];
+					const XMFLOAT3 v2 = vertex_positions[i2];
+
+					const XMFLOAT2 u0 = vertex_uvset_0[i0];
+					const XMFLOAT2 u1 = vertex_uvset_0[i1];
+					const XMFLOAT2 u2 = vertex_uvset_0[i2];
+
+					const XMFLOAT3 n0 = vertex_normals[i0];
+					const XMFLOAT3 n1 = vertex_normals[i1];
+					const XMFLOAT3 n2 = vertex_normals[i2];
+
+					const XMVECTOR nor0 = XMLoadFloat3(&n0);
+					const XMVECTOR nor1 = XMLoadFloat3(&n1);
+					const XMVECTOR nor2 = XMLoadFloat3(&n2);
+
+					const XMVECTOR facenormal = XMVector3Normalize(nor0 + nor1 + nor2);
+
+					const float x1 = v1.x - v0.x;
+					const float x2 = v2.x - v0.x;
+					const float y1 = v1.y - v0.y;
+					const float y2 = v2.y - v0.y;
+					const float z1 = v1.z - v0.z;
+					const float z2 = v2.z - v0.z;
+
+					const float s1 = u1.x - u0.x;
+					const float s2 = u2.x - u0.x;
+					const float t1 = u1.y - u0.y;
+					const float t2 = u2.y - u0.y;
+
+					const float r = 1.0f / (s1 * t2 - s2 * t1);
+					const XMVECTOR sdir = XMVectorSet((t2 * x1 - t1 * x2) * r, (t2 * y1 - t1 * y2) * r,
+						(t2 * z1 - t1 * z2) * r, 0);
+					const XMVECTOR tdir = XMVectorSet((s1 * x2 - s2 * x1) * r, (s1 * y2 - s2 * y1) * r,
+						(s1 * z2 - s2 * z1) * r, 0);
+
+					XMVECTOR tangent;
+					tangent = XMVector3Normalize(sdir - facenormal * XMVector3Dot(facenormal, sdir));
+					float sign = XMVectorGetX(XMVector3Dot(XMVector3Cross(tangent, facenormal), tdir)) < 0.0f ? -1.0f : 1.0f;
+
+					XMFLOAT3 t;
+					XMStoreFloat3(&t, tangent);
+
+					vertex_tangents[i0].x += t.x;
+					vertex_tangents[i0].y += t.y;
+					vertex_tangents[i0].z += t.z;
+					vertex_tangents[i0].w = sign;
+
+					vertex_tangents[i1].x += t.x;
+					vertex_tangents[i1].y += t.y;
+					vertex_tangents[i1].z += t.z;
+					vertex_tangents[i1].w = sign;
+
+					vertex_tangents[i2].x += t.x;
+					vertex_tangents[i2].y += t.y;
+					vertex_tangents[i2].z += t.z;
+					vertex_tangents[i2].w = sign;
+				}
+
+			}
+
+			std::vector<Vertex_TAN> vertices(vertex_tangents.size());
+			for (size_t i = 0; i < vertex_tangents.size(); ++i)
+			{
+				vertices[i].FromFULL(vertex_tangents[i]);
+			}
+
+			GPUBufferDesc bd;
+			bd.Usage = USAGE_DEFAULT;
+			bd.CPUAccessFlags = 0;
+			bd.BindFlags = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE;
+			bd.MiscFlags = RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+			bd.StructureByteStride = sizeof(Vertex_TAN);
+			bd.ByteWidth = (uint32_t)(bd.StructureByteStride * vertices.size());
+
+			SubresourceData InitData;
+			InitData.pSysMem = vertices.data();
+			device->CreateBuffer(&bd, &InitData, &vertexBuffer_TAN);
+			device->SetName(&vertexBuffer_TAN, "vertexBuffer_TAN");
 		}
 
 		aabb = AABB(_min, _max);
@@ -430,8 +587,20 @@ namespace wiScene
 			bd.CPUAccessFlags = 0;
 			bd.MiscFlags = RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
 
+			if (!vertex_tangents.empty())
+			{
+				bd.ByteWidth = (uint32_t)(sizeof(Vertex_TAN) * vertex_tangents.size());
+				device->CreateBuffer(&bd, nullptr, &streamoutBuffer_TAN);
+				device->SetName(&streamoutBuffer_TAN, "streamoutBuffer_TAN");
+			}
+
 			bd.ByteWidth = (uint32_t)(sizeof(Vertex_POS) * vertex_positions.size());
+			if (device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_RAYTRACING))
+			{
+				bd.MiscFlags |= RESOURCE_MISC_RAY_TRACING;
+			}
 			device->CreateBuffer(&bd, nullptr, &streamoutBuffer_POS);
+			device->SetName(&streamoutBuffer_POS, "streamoutBuffer_POS");
 		}
 
 		// vertexBuffer - UV SET 0
@@ -447,14 +616,14 @@ namespace wiScene
 			bd.Usage = USAGE_IMMUTABLE;
 			bd.CPUAccessFlags = 0;
 			bd.BindFlags = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE;
-			bd.MiscFlags = 0;
+			bd.MiscFlags = RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
 			bd.StructureByteStride = sizeof(Vertex_TEX);
 			bd.ByteWidth = (uint32_t)(bd.StructureByteStride * vertices.size());
-			bd.Format = Vertex_TEX::FORMAT;
 
 			SubresourceData InitData;
 			InitData.pSysMem = vertices.data();
 			device->CreateBuffer(&bd, &InitData, &vertexBuffer_UV0);
+			device->SetName(&vertexBuffer_UV0, "vertexBuffer_UV0");
 		}
 
 		// vertexBuffer - UV SET 1
@@ -470,14 +639,14 @@ namespace wiScene
 			bd.Usage = USAGE_IMMUTABLE;
 			bd.CPUAccessFlags = 0;
 			bd.BindFlags = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE;
-			bd.MiscFlags = 0;
+			bd.MiscFlags = RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
 			bd.StructureByteStride = sizeof(Vertex_TEX);
 			bd.ByteWidth = (uint32_t)(bd.StructureByteStride * vertices.size());
-			bd.Format = Vertex_TEX::FORMAT;
 
 			SubresourceData InitData;
 			InitData.pSysMem = vertices.data();
 			device->CreateBuffer(&bd, &InitData, &vertexBuffer_UV1);
+			device->SetName(&vertexBuffer_UV1, "vertexBuffer_UV1");
 		}
 
 		// vertexBuffer - COLORS
@@ -487,14 +656,14 @@ namespace wiScene
 			bd.Usage = USAGE_IMMUTABLE;
 			bd.CPUAccessFlags = 0;
 			bd.BindFlags = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE;
-			bd.MiscFlags = 0;
+			bd.MiscFlags = RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
 			bd.StructureByteStride = sizeof(Vertex_COL);
 			bd.ByteWidth = (uint32_t)(bd.StructureByteStride * vertex_colors.size());
-			bd.Format = FORMAT_R8G8B8A8_UNORM;
 
 			SubresourceData InitData;
 			InitData.pSysMem = vertex_colors.data();
 			device->CreateBuffer(&bd, &InitData, &vertexBuffer_COL);
+			device->SetName(&vertexBuffer_COL, "vertexBuffer_COL");
 		}
 
 		// vertexBuffer - ATLAS
@@ -510,14 +679,14 @@ namespace wiScene
 			bd.Usage = USAGE_IMMUTABLE;
 			bd.CPUAccessFlags = 0;
 			bd.BindFlags = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE;
-			bd.MiscFlags = 0;
+			bd.MiscFlags = RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
 			bd.StructureByteStride = sizeof(Vertex_TEX);
 			bd.ByteWidth = (uint32_t)(bd.StructureByteStride * vertices.size());
-			bd.Format = Vertex_TEX::FORMAT;
 
 			SubresourceData InitData;
 			InitData.pSysMem = vertices.data();
 			device->CreateBuffer(&bd, &InitData, &vertexBuffer_ATL);
+			device->SetName(&vertexBuffer_ATL, "vertexBuffer_ATL");
 		}
 
 		// vertexBuffer - SUBSETS
@@ -547,11 +716,115 @@ namespace wiScene
 			SubresourceData InitData;
 			InitData.pSysMem = vertex_subsets.data();
 			device->CreateBuffer(&bd, &InitData, &vertexBuffer_SUB);
+			device->SetName(&vertexBuffer_SUB, "vertexBuffer_SUB");
 		}
 
 		// vertexBuffer_PRE will be created on demand later!
 		vertexBuffer_PRE = GPUBuffer();
 
+
+		if (wiRenderer::GetDevice()->CheckCapability(GRAPHICSDEVICE_CAPABILITY_RAYTRACING))
+		{
+			_flags |= DIRTY_BLAS;
+
+			RaytracingAccelerationStructureDesc desc;
+			desc.type = RaytracingAccelerationStructureDesc::BOTTOMLEVEL;
+
+			if (streamoutBuffer_POS.IsValid())
+			{
+				desc._flags |= RaytracingAccelerationStructureDesc::FLAG_ALLOW_UPDATE;
+				desc._flags |= RaytracingAccelerationStructureDesc::FLAG_PREFER_FAST_BUILD;
+			}
+			else
+			{
+				desc._flags |= RaytracingAccelerationStructureDesc::FLAG_PREFER_FAST_TRACE;
+			}
+
+#if 0
+			// Flattened subsets:
+			desc.bottomlevel.geometries.emplace_back();
+			auto& geometry = desc.bottomlevel.geometries.back();
+			geometry.type = RaytracingAccelerationStructureDesc::BottomLevel::Geometry::TRIANGLES;
+			geometry.triangles.vertexBuffer = streamoutBuffer_POS.IsValid() ? streamoutBuffer_POS : vertexBuffer_POS;
+			geometry.triangles.indexBuffer = indexBuffer;
+			geometry.triangles.indexFormat = GetIndexFormat();
+			geometry.triangles.indexCount = (uint32_t)indices.size();
+			geometry.triangles.indexOffset = 0;
+			geometry.triangles.vertexCount = (uint32_t)vertex_positions.size();
+			geometry.triangles.vertexFormat = FORMAT_R32G32B32_FLOAT;
+			geometry.triangles.vertexStride = sizeof(MeshComponent::Vertex_POS);
+#else
+			// One geometry per subset:
+			for (auto& subset : subsets)
+			{
+				desc.bottomlevel.geometries.emplace_back();
+				auto& geometry = desc.bottomlevel.geometries.back();
+				geometry.type = RaytracingAccelerationStructureDesc::BottomLevel::Geometry::TRIANGLES;
+				geometry.triangles.vertexBuffer = streamoutBuffer_POS.IsValid() ? streamoutBuffer_POS : vertexBuffer_POS;
+				geometry.triangles.indexBuffer = indexBuffer;
+				geometry.triangles.indexFormat = GetIndexFormat();
+				geometry.triangles.indexCount = subset.indexCount;
+				geometry.triangles.indexOffset = subset.indexOffset;
+				geometry.triangles.vertexCount = (uint32_t)vertex_positions.size();
+				geometry.triangles.vertexFormat = FORMAT_R32G32B32_FLOAT;
+				geometry.triangles.vertexStride = sizeof(MeshComponent::Vertex_POS);
+			}
+#endif
+
+			bool success = device->CreateRaytracingAccelerationStructure(&desc, &BLAS);
+			assert(success);
+			device->SetName(&BLAS, "BLAS");
+		}
+
+		if(device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_BINDLESS_DESCRIPTORS))
+		{
+			_flags |= DIRTY_BINDLESS;
+
+			GPUBufferDesc desc;
+			desc.BindFlags = BIND_SHADER_RESOURCE;
+			desc.MiscFlags = RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+			desc.ByteWidth = sizeof(ShaderMesh);
+			bool success = device->CreateBuffer(&desc, nullptr, &descriptor);
+			assert(success);
+
+			desc.BindFlags = BIND_SHADER_RESOURCE;
+			desc.MiscFlags = RESOURCE_MISC_BUFFER_STRUCTURED;
+			desc.StructureByteStride = sizeof(ShaderMeshSubset);
+			desc.ByteWidth = desc.StructureByteStride * (uint32_t)subsets.size();
+			success = device->CreateBuffer(&desc, nullptr, &subsetBuffer);
+			assert(success);
+		}
+	}
+	void MeshComponent::WriteShaderMesh(ShaderMesh* dest) const
+	{
+		GraphicsDevice* device = wiRenderer::GetDevice();
+		dest->ib = device->GetDescriptorIndex(&indexBuffer, SRV);
+		if (streamoutBuffer_POS.IsValid())
+		{
+			dest->vb_pos_nor_wind = device->GetDescriptorIndex(&streamoutBuffer_POS, SRV);
+		}
+		else
+		{
+			dest->vb_pos_nor_wind = device->GetDescriptorIndex(&vertexBuffer_POS, SRV);
+		}
+		if (streamoutBuffer_TAN.IsValid())
+		{
+			dest->vb_tan = device->GetDescriptorIndex(&streamoutBuffer_TAN, SRV);
+		}
+		else
+		{
+			dest->vb_tan = device->GetDescriptorIndex(&vertexBuffer_TAN, SRV);
+		}
+		dest->vb_uv0 = device->GetDescriptorIndex(&vertexBuffer_UV0, SRV);
+		dest->vb_uv1 = device->GetDescriptorIndex(&vertexBuffer_UV1, SRV);
+		dest->vb_bon = device->GetDescriptorIndex(&vertexBuffer_BON, SRV);
+		dest->vb_col = device->GetDescriptorIndex(&vertexBuffer_COL, SRV);
+		dest->vb_atl = device->GetDescriptorIndex(&vertexBuffer_ATL, SRV);
+		dest->vb_pre = device->GetDescriptorIndex(&vertexBuffer_PRE, SRV);
+		dest->blendmaterial1 = terrain_material1_index;
+		dest->blendmaterial2 = terrain_material2_index;
+		dest->blendmaterial3 = terrain_material3_index;
+		dest->subsetbuffer = device->GetDescriptorIndex(&subsetBuffer, SRV);
 	}
 	void MeshComponent::ComputeNormals(COMPUTE_NORMALS compute)
 	{
@@ -732,7 +1005,6 @@ namespace wiScene
 				{
 					uint32_t ind0 = indices[subset.indexOffset + (uint32_t)i];
 					const XMFLOAT3& p0 = vertex_positions[ind0];
-					const XMFLOAT3& n0 = vertex_normals[ind0];
 					const XMFLOAT2& u00 = vertex_uvset_0.empty() ? XMFLOAT2(0, 0) : vertex_uvset_0[ind0];
 					const XMFLOAT2& u10 = vertex_uvset_1.empty() ? XMFLOAT2(0, 0) : vertex_uvset_1[ind0];
 					const XMFLOAT2& at0 = vertex_atlas.empty() ? XMFLOAT2(0, 0) : vertex_atlas[ind0];
@@ -747,7 +1019,6 @@ namespace wiScene
 						}
 
 						const XMFLOAT3& p1 = vertex_positions[ind1];
-						const XMFLOAT3& n1 = vertex_normals[ind1];
 						const XMFLOAT2& u01 = vertex_uvset_0.empty() ? XMFLOAT2(0, 0) : vertex_uvset_0[ind1];
 						const XMFLOAT2& u11 = vertex_uvset_1.empty() ? XMFLOAT2(0, 0) : vertex_uvset_1[ind1];
 						const XMFLOAT2& at1 = vertex_atlas.empty() ? XMFLOAT2(0, 0) : vertex_atlas[ind1];
@@ -859,6 +1130,8 @@ namespace wiScene
 
 		}
 
+		vertex_tangents.clear(); // <- will be recomputed
+
 		CreateRenderData(); // <- normals will be normalized here!
 	}
 	void MeshComponent::FlipCulling()
@@ -936,34 +1209,11 @@ namespace wiScene
 	}
 	void ObjectComponent::SaveLightmap()
 	{
-		if (!lightmap.IsValid())
+		if (lightmap.IsValid())
 		{
-			return;
+			bool success = wiHelper::saveTextureToMemory(lightmap, lightmapTextureData);
+			assert(success);
 		}
-
-		GraphicsDevice* device = wiRenderer::GetDevice();
-
-		TextureDesc desc = lightmap.GetDesc();
-		uint32_t data_count = desc.Width * desc.Height;
-		uint32_t data_stride = device->GetFormatStride(desc.Format);
-		uint32_t data_size = data_count * data_stride;
-
-		lightmapWidth = desc.Width;
-		lightmapHeight = desc.Height;
-		lightmapTextureData.clear();
-		lightmapTextureData.resize(data_size);
-
-		TextureDesc staging_desc = desc;
-		staging_desc.Usage = USAGE_STAGING;
-		staging_desc.CPUAccessFlags = CPU_ACCESS_READ;
-		staging_desc.BindFlags = 0;
-		staging_desc.MiscFlags = 0;
-
-		Texture stagingTex;
-		device->CreateTexture(&staging_desc, nullptr, &stagingTex);
-
-		bool download_success = device->DownloadResource(&lightmap, &stagingTex, lightmapTextureData.data());
-		assert(download_success);
 	}
 	FORMAT ObjectComponent::GetLightmapFormat()
 	{
@@ -979,9 +1229,27 @@ namespace wiScene
 		return FORMAT_UNKNOWN;
 	}
 
+	void ArmatureComponent::CreateRenderData()
+	{
+		GraphicsDevice* device = wiRenderer::GetDevice();
+
+		GPUBufferDesc bd;
+		bd.Usage = USAGE_DYNAMIC;
+		bd.CPUAccessFlags = CPU_ACCESS_WRITE;
+
+		bd.ByteWidth = sizeof(ArmatureComponent::ShaderBoneType) * (uint32_t)boneCollection.size();
+		bd.BindFlags = BIND_SHADER_RESOURCE;
+		bd.MiscFlags = RESOURCE_MISC_BUFFER_STRUCTURED;
+		bd.StructureByteStride = sizeof(ArmatureComponent::ShaderBoneType);
+
+		device->CreateBuffer(&bd, nullptr, &boneBuffer);
+	}
+
 	void SoftBodyPhysicsComponent::CreateFromMesh(const MeshComponent& mesh)
 	{
 		vertex_positions_simulation.resize(mesh.vertex_positions.size());
+		vertex_tangents_tmp.resize(mesh.vertex_tangents.size());
+		vertex_tangents_simulation.resize(mesh.vertex_tangents.size());
 
 		XMMATRIX W = XMLoadFloat4x4(&worldMatrix);
 		XMFLOAT3 _min = XMFLOAT3(FLT_MAX, FLT_MAX, FLT_MAX);
@@ -1101,6 +1369,17 @@ namespace wiScene
 		XMVECTOR _Up = XMLoadFloat3(&Up);
 		XMMATRIX _Ref = XMMatrixReflect(XMLoadFloat4(&plane));
 
+		// reverse clipping if behind clip plane ("if underwater")
+		clipPlane = plane;
+		float d = XMVectorGetX(XMPlaneDotCoord(XMLoadFloat4(&clipPlane), _Eye));
+		if (d < 0)
+		{
+			clipPlane.x *= -1;
+			clipPlane.y *= -1;
+			clipPlane.z *= -1;
+			clipPlane.w *= -1;
+		}
+
 		_Eye = XMVector3Transform(_Eye, _Ref);
 		_At = XMVector3TransformNormal(_At, _Ref);
 		_Up = XMVector3TransformNormal(_Up, _Ref);
@@ -1112,53 +1391,138 @@ namespace wiScene
 		UpdateCamera();
 	}
 
+
+
 	void Scene::Update(float dt)
 	{
+		this->dt = dt;
+
+		GraphicsDevice* device = wiRenderer::GetDevice();
+		if (dt > 0)
+		{
+			cmd = device->BeginCommandList();
+			BLAS_builds.clear();
+		}
+		else
+		{
+			cmd = INVALID_COMMANDLIST;
+		}
+
+		if (device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_RAYTRACING))
+		{
+			TLAS_instances.resize(objects.GetCount() * device->GetTopLevelAccelerationStructureInstanceSize());
+		}
+
+		// Occlusion culling read:
+		{
+			if (!queryHeap[0].IsValid())
+			{
+				GPUQueryHeapDesc desc;
+				desc.type = GPU_QUERY_TYPE_OCCLUSION_BINARY;
+				desc.queryCount = 2048;
+				for (int i = 0; i < arraysize(queryHeap); ++i)
+				{
+					bool success = wiRenderer::GetDevice()->CreateQueryHeap(&desc, &queryHeap[i]);
+					assert(success);
+				}
+				queryResults.resize(desc.queryCount);
+			}
+			queryheap_idx++;
+			queryheap_idx %= arraysize(queryHeap);
+			writtenQueries[queryheap_idx] = std::min(queryAllocator.load(), queryHeap[queryheap_idx].desc.queryCount);
+			queryAllocator.store(0);
+
+			if (writtenQueries[queryheap_idx] > 0)
+			{
+				device->QueryRead(
+					&queryHeap[queryheap_idx],
+					0,
+					writtenQueries[queryheap_idx],
+					queryResults.data()
+				);
+			}
+		}
+
 		wiJobSystem::context ctx;
 
-		RunPreviousFrameTransformUpdateSystem(ctx, transforms, prev_transforms);
+		RunPreviousFrameTransformUpdateSystem(ctx);
 
-		RunAnimationUpdateSystem(ctx, animations, transforms, dt);
+		RunAnimationUpdateSystem(ctx);
 
-		RunTransformUpdateSystem(ctx, transforms);
+		RunTransformUpdateSystem(ctx);
 
-		wiJobSystem::Wait(ctx); // dependecies
+		wiJobSystem::Wait(ctx); // dependencies
 
-		RunHierarchyUpdateSystem(ctx, hierarchy, transforms, layers);
+		RunHierarchyUpdateSystem(ctx);
 
-		RunSpringUpdateSystem(ctx, weather, hierarchy, transforms, springs, dt);
+		RunSpringUpdateSystem(ctx);
 
-		RunInverseKinematicsUpdateSystem(ctx, inverse_kinematics, hierarchy, transforms);
+		RunInverseKinematicsUpdateSystem(ctx);
 
-		RunArmatureUpdateSystem(ctx, transforms, armatures);
+		RunArmatureUpdateSystem(ctx);
 
-		RunMaterialUpdateSystem(ctx, materials, dt);
+		RunMeshUpdateSystem(ctx);
 
-		RunImpostorUpdateSystem(ctx, impostors);
+		RunMaterialUpdateSystem(ctx);
 
-		wiJobSystem::Wait(ctx); // dependecies
+		RunImpostorUpdateSystem(ctx);
 
-		RunObjectUpdateSystem(ctx, prev_transforms, transforms, meshes, materials, armatures, objects, aabb_objects, impostors, softbodies, bounds, waterPlane);
+		RunWeatherUpdateSystem(ctx);
 
-		wiPhysicsEngine::RunPhysicsUpdateSystem(ctx, weather, armatures, transforms, meshes, objects, rigidbodies, softbodies, dt);
+		wiPhysicsEngine::RunPhysicsUpdateSystem(ctx, *this, dt);
 
-		RunCameraUpdateSystem(ctx, transforms, cameras);
+		wiJobSystem::Wait(ctx); // dependencies
 
-		RunDecalUpdateSystem(ctx, transforms, materials, aabb_decals, decals);
+		RunObjectUpdateSystem(ctx);
 
-		RunProbeUpdateSystem(ctx, transforms, aabb_probes, probes);
+		RunCameraUpdateSystem(ctx);
 
-		RunForceUpdateSystem(ctx, transforms, forces);
+		RunDecalUpdateSystem(ctx);
 
-		RunLightUpdateSystem(ctx, transforms, aabb_lights, lights);
+		RunProbeUpdateSystem(ctx);
 
-		RunParticleUpdateSystem(ctx, transforms, meshes, emitters, hairs, dt);
+		RunForceUpdateSystem(ctx);
 
-		wiJobSystem::Wait(ctx); // dependecies
+		RunLightUpdateSystem(ctx);
 
-		RunWeatherUpdateSystem(ctx, weathers, lights, weather);
+		RunParticleUpdateSystem(ctx);
 
-		RunSoundUpdateSystem(ctx, transforms, sounds);
+		RunSoundUpdateSystem(ctx);
+
+		wiJobSystem::Wait(ctx); // dependencies
+
+		// Merge parallel bounds computation (depends on object update system):
+		bounds = AABB();
+		for (auto& group_bound : parallel_bounds)
+		{
+			bounds = AABB::Merge(bounds, group_bound);
+		}
+
+		if (device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_RAYTRACING))
+		{
+			// Recreate top level acceleration structure if the object count changed:
+			if (dt > 0 && objects.GetCount() > 0 && objects.GetCount() != TLAS.desc.toplevel.count)
+			{
+				RaytracingAccelerationStructureDesc desc;
+				desc._flags = RaytracingAccelerationStructureDesc::FLAG_PREFER_FAST_BUILD;
+				desc.type = RaytracingAccelerationStructureDesc::TOPLEVEL;
+				desc.toplevel.count = (uint32_t)objects.GetCount();
+				GPUBufferDesc bufdesc;
+				bufdesc.MiscFlags |= RESOURCE_MISC_RAY_TRACING;
+				bufdesc.ByteWidth = desc.toplevel.count * (uint32_t)device->GetTopLevelAccelerationStructureInstanceSize();
+				bool success = device->CreateBuffer(&bufdesc, nullptr, &desc.toplevel.instanceBuffer);
+				assert(success);
+				device->SetName(&desc.toplevel.instanceBuffer, "TLAS.instanceBuffer");
+				success = device->CreateRaytracingAccelerationStructure(&desc, &TLAS);
+				assert(success);
+				device->SetName(&TLAS, "TLAS");
+			}
+		}
+
+		if (cmd != INVALID_COMMANDLIST)
+		{
+			device->StashCommandLists();
+		}
 	}
 	void Scene::Clear()
 	{
@@ -1184,12 +1548,15 @@ namespace wiScene
 		decals.Clear();
 		aabb_decals.Clear();
 		animations.Clear();
+		animation_datas.Clear();
 		emitters.Clear();
 		hairs.Clear();
 		weathers.Clear();
 		sounds.Clear();
 		inverse_kinematics.Clear();
 		springs.Clear();
+
+		TLAS = RaytracingAccelerationStructure();
 	}
 	void Scene::Merge(Scene& other)
 	{
@@ -1215,6 +1582,7 @@ namespace wiScene
 		decals.Merge(other.decals);
 		aabb_decals.Merge(other.aabb_decals);
 		animations.Merge(other.animations);
+		animation_datas.Merge(other.animation_datas);
 		emitters.Merge(other.emitters);
 		hairs.Merge(other.hairs);
 		weathers.Merge(other.weathers);
@@ -1250,6 +1618,7 @@ namespace wiScene
 		decals.Remove(entity);
 		aabb_decals.Remove(entity);
 		animations.Remove(entity);
+		animation_datas.Remove(entity);
 		emitters.Remove(entity);
 		hairs.Remove(entity);
 		weathers.Remove(entity);
@@ -1272,13 +1641,46 @@ namespace wiScene
 	{
 		wiArchive archive;
 
-		// First write the entity to staging area:
+		// First write the root entity to staging area:
 		archive.SetReadModeAndResetPos(false);
-		Entity_Serialize(archive, entity, 0);
+		Entity_Serialize(archive, entity);
 
-		// Then deserialize with a unique seed:
+		// Gather all descendants in the hierarchy:
+		std::unordered_map<Entity, size_t> descendants;
+		size_t prefix = descendants.size();
+		descendants[entity] = prefix;
+		for (size_t i = 0; i < hierarchy.GetCount(); ++i)
+		{
+		    const HierarchyComponent& hier = hierarchy[i];
+			if (descendants.count(hier.parentID) != 0)
+			{
+			    Entity child = hierarchy.GetEntity(i);
+			    prefix = descendants.size();
+			    descendants[child] = prefix;
+			    Entity_Serialize(archive, child);
+			}
+		}
+
+		// Then deserialize root:
 		archive.SetReadModeAndResetPos(true);
-		return Entity_Serialize(archive, entity, CreateEntity(), false);
+		Entity root = Entity_Serialize(archive);
+
+		// Deserialize descendants:
+		std::vector<Entity> remapping;
+		remapping.push_back(root);
+		for (size_t i = 0; i < descendants.size() - 1; ++i)
+		{
+		    Entity descendant = Entity_Serialize(archive);
+		    remapping.push_back(descendant);
+		    HierarchyComponent* hier = hierarchy.GetComponent(descendant);
+			if (hier != nullptr)
+			{
+				// remap from old parent to new parent:
+			    size_t remap_idx = descendants[hier->parentID];
+				hier->parentID = remapping[remap_idx];
+			}
+		}
+		return root;
 	}
 	Entity Scene::Entity_CreateMaterial(
 		const std::string& name
@@ -1329,7 +1731,8 @@ namespace wiScene
 		const XMFLOAT3& position,
 		const XMFLOAT3& color,
 		float energy,
-		float range)
+		float range,
+		LightComponent::LightType type)
 	{
 		Entity entity = CreateEntity();
 
@@ -1348,7 +1751,7 @@ namespace wiScene
 		light.range_local = range;
 		light.fov = XM_PIDIV4;
 		light.color = color;
-		light.SetType(LightComponent::POINT);
+		light.SetType(type);
 
 		return entity;
 	}
@@ -1414,17 +1817,9 @@ namespace wiScene
 		decals.Create(entity);
 
 		MaterialComponent& material = materials.Create(entity);
-
-		if (!textureName.empty())
-		{
-			material.baseColorMapName = textureName;
-			material.baseColorMap = wiResourceManager::Load(material.baseColorMapName);
-		}
-		if (!normalMapName.empty())
-		{
-			material.normalMapName = normalMapName;
-			material.normalMap = wiResourceManager::Load(material.normalMapName);
-		}
+		material.textures[MaterialComponent::BASECOLORMAP].name = textureName;
+		material.textures[MaterialComponent::NORMALMAP].name = normalMapName;
+		material.CreateRenderData();
 
 		return entity;
 	}
@@ -1496,8 +1891,8 @@ namespace wiScene
 
 		SoundComponent& sound = sounds.Create(entity);
 		sound.filename = filename;
-		sound.soundResource = wiResourceManager::Load(filename);
-		wiAudio::CreateSoundInstance(sound.soundResource->sound, &sound.soundinstance);
+		sound.soundResource = wiResourceManager::Load(filename, wiResourceManager::IMPORT_RETAIN_FILEDATA);
+		wiAudio::CreateSoundInstance(&sound.soundResource->sound, &sound.soundinstance);
 
 		TransformComponent& transform = transforms.Create(entity);
 		transform.Translate(position);
@@ -1525,7 +1920,6 @@ namespace wiScene
 			for (size_t i = hierarchy.GetCount() - 1; i > 0; --i)
 			{
 				Entity parent_candidate_entity = hierarchy.GetEntity(i);
-				const HierarchyComponent& parent_candidate = hierarchy[i];
 				for (size_t j = 0; j < i; ++j)
 				{
 					const HierarchyComponent& child_candidate = hierarchy[j];
@@ -1573,8 +1967,7 @@ namespace wiScene
 		{
 			layer_child = &layers.Create(entity);
 		}
-		// Save the initial layermask of the child so that it can be restored if detached:
-		parentcomponent.layerMask_bind = layer_child->GetLayerMask();
+		layer_child->propagationMask = layer_parent->GetLayerMask();
 	}
 	void Scene::Component_Detach(Entity entity)
 	{
@@ -1591,7 +1984,7 @@ namespace wiScene
 			LayerComponent* layer = layers.GetComponent(entity);
 			if (layer != nullptr)
 			{
-				layer->layerMask = parent->layerMask_bind;
+				layer->propagationMask = ~0;
 			}
 
 			hierarchy.Remove_KeepSorted(entity);
@@ -1614,15 +2007,11 @@ namespace wiScene
 	}
 
 
-	const uint32_t small_subtask_groupsize = 1024;
+	const uint32_t small_subtask_groupsize = 64;
 
-	void RunPreviousFrameTransformUpdateSystem(
-		wiJobSystem::context& ctx,
-		const ComponentManager<TransformComponent>& transforms,
-		ComponentManager<PreviousFrameTransformComponent>& prev_transforms
-	)
+	void Scene::RunPreviousFrameTransformUpdateSystem(wiJobSystem::context& ctx)
 	{
-		wiJobSystem::Dispatch(ctx, (uint32_t)prev_transforms.GetCount(), small_subtask_groupsize, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)prev_transforms.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
 
 			PreviousFrameTransformComponent& prev_transform = prev_transforms[args.jobIndex];
 			Entity entity = prev_transforms.GetEntity(args.jobIndex);
@@ -1631,12 +2020,7 @@ namespace wiScene
 			prev_transform.world_prev = transform.world;
 		});
 	}
-	void RunAnimationUpdateSystem(
-		wiJobSystem::context& ctx,
-		ComponentManager<AnimationComponent>& animations,
-		ComponentManager<TransformComponent>& transforms,
-		float dt
-	)
+	void Scene::RunAnimationUpdateSystem(wiJobSystem::context& ctx)
 	{
 		for (size_t i = 0; i < animations.GetCount(); ++i)
 		{
@@ -1648,69 +2032,128 @@ namespace wiScene
 
 			for (const AnimationComponent::AnimationChannel& channel : animation.channels)
 			{
-				assert(channel.samplerIndex < animation.samplers.size());
-				const AnimationComponent::AnimationSampler& sampler = animation.samplers[channel.samplerIndex];
+				assert(channel.samplerIndex < (int)animation.samplers.size());
+				AnimationComponent::AnimationSampler& sampler = animation.samplers[channel.samplerIndex];
+				if (sampler.data == INVALID_ENTITY)
+				{
+					// backwards-compatibility mode
+					sampler.data = CreateEntity();
+					animation_datas.Create(sampler.data) = sampler.backwards_compatibility_data;
+					sampler.backwards_compatibility_data.keyframe_times.clear();
+					sampler.backwards_compatibility_data.keyframe_data.clear();
+				}
+				const AnimationDataComponent* animationdata = animation_datas.GetComponent(sampler.data);
+				if (animationdata == nullptr)
+				{
+					continue;
+				}
 
 				int keyLeft = 0;
 				int keyRight = 0;
 
-				if (sampler.keyframe_times.back() < animation.timer)
+				if (animationdata->keyframe_times.back() < animation.timer)
 				{
 					// Rightmost keyframe is already outside animation, so just snap to last keyframe:
-					keyLeft = keyRight = (int)sampler.keyframe_times.size() - 1;
+					keyLeft = keyRight = (int)animationdata->keyframe_times.size() - 1;
 				}
 				else
 				{
 					// Search for the right keyframe (greater/equal to anim time):
-					while (sampler.keyframe_times[keyRight++] < animation.timer) {}
+					while (animationdata->keyframe_times[keyRight++] < animation.timer) {}
 					keyRight--;
 
 					// Left keyframe is just near right:
 					keyLeft = std::max(0, keyRight - 1);
 				}
 
-				float left = sampler.keyframe_times[keyLeft];
+				float left = animationdata->keyframe_times[keyLeft];
 
-				TransformComponent& target_transform = *transforms.GetComponent(channel.target);
-				TransformComponent transform = target_transform;
+				TransformComponent transform;
 
-				if (sampler.mode == AnimationComponent::AnimationSampler::Mode::STEP || keyLeft == keyRight)
+				TransformComponent* target_transform = nullptr;
+				MeshComponent* target_mesh = nullptr;
+
+				if (channel.path == AnimationComponent::AnimationChannel::Path::WEIGHTS)
+				{
+					ObjectComponent* object = objects.GetComponent(channel.target);
+					assert(object != nullptr);
+					if (object == nullptr)
+						continue;
+					target_mesh = meshes.GetComponent(object->meshID);
+					assert(target_mesh != nullptr);
+					if (target_mesh == nullptr)
+						continue;
+					animation.morph_weights_temp.resize(target_mesh->targets.size());
+				}
+				else
+				{
+					target_transform = transforms.GetComponent(channel.target);
+					assert(target_transform != nullptr);
+					if (target_transform == nullptr)
+						continue;
+					transform = *target_transform;
+				}
+
+				switch (sampler.mode)
+				{
+				default:
+				case AnimationComponent::AnimationSampler::Mode::STEP:
 				{
 					// Nearest neighbor method (snap to left):
 					switch (channel.path)
 					{
+					default:
 					case AnimationComponent::AnimationChannel::Path::TRANSLATION:
 					{
-						assert(sampler.keyframe_data.size() == sampler.keyframe_times.size() * 3);
-						transform.translation_local = ((const XMFLOAT3*)sampler.keyframe_data.data())[keyLeft];
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * 3);
+						transform.translation_local = ((const XMFLOAT3*)animationdata->keyframe_data.data())[keyLeft];
 					}
 					break;
 					case AnimationComponent::AnimationChannel::Path::ROTATION:
 					{
-						assert(sampler.keyframe_data.size() == sampler.keyframe_times.size() * 4);
-						transform.rotation_local = ((const XMFLOAT4*)sampler.keyframe_data.data())[keyLeft];
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * 4);
+						transform.rotation_local = ((const XMFLOAT4*)animationdata->keyframe_data.data())[keyLeft];
 					}
 					break;
 					case AnimationComponent::AnimationChannel::Path::SCALE:
 					{
-						assert(sampler.keyframe_data.size() == sampler.keyframe_times.size() * 3);
-						transform.scale_local = ((const XMFLOAT3*)sampler.keyframe_data.data())[keyLeft];
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * 3);
+						transform.scale_local = ((const XMFLOAT3*)animationdata->keyframe_data.data())[keyLeft];
+					}
+					break;
+					case AnimationComponent::AnimationChannel::Path::WEIGHTS:
+					{
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * animation.morph_weights_temp.size());
+						for (size_t j = 0; j < animation.morph_weights_temp.size(); ++j)
+						{
+							animation.morph_weights_temp[j] = animationdata->keyframe_data[keyLeft * animation.morph_weights_temp.size() + j];
+						}
 					}
 					break;
 					}
 				}
-				else
+				break;
+				case AnimationComponent::AnimationSampler::Mode::LINEAR:
 				{
 					// Linear interpolation method:
-					float right = sampler.keyframe_times[keyRight];
-					float t = (animation.timer - left) / (right - left);
+					float t;
+					if (keyLeft == keyRight)
+					{
+						t = 0;
+					}
+					else
+					{
+						float right = animationdata->keyframe_times[keyRight];
+						t = (animation.timer - left) / (right - left);
+					}
 
 					switch (channel.path)
 					{
+					default:
 					case AnimationComponent::AnimationChannel::Path::TRANSLATION:
 					{
-						assert(sampler.keyframe_data.size() == sampler.keyframe_times.size() * 3);
-						const XMFLOAT3* data = (const XMFLOAT3*)sampler.keyframe_data.data();
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * 3);
+						const XMFLOAT3* data = (const XMFLOAT3*)animationdata->keyframe_data.data();
 						XMVECTOR vLeft = XMLoadFloat3(&data[keyLeft]);
 						XMVECTOR vRight = XMLoadFloat3(&data[keyRight]);
 						XMVECTOR vAnim = XMVectorLerp(vLeft, vRight, t);
@@ -1719,8 +2162,8 @@ namespace wiScene
 					break;
 					case AnimationComponent::AnimationChannel::Path::ROTATION:
 					{
-						assert(sampler.keyframe_data.size() == sampler.keyframe_times.size() * 4);
-						const XMFLOAT4* data = (const XMFLOAT4*)sampler.keyframe_data.data();
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * 4);
+						const XMFLOAT4* data = (const XMFLOAT4*)animationdata->keyframe_data.data();
 						XMVECTOR vLeft = XMLoadFloat4(&data[keyLeft]);
 						XMVECTOR vRight = XMLoadFloat4(&data[keyRight]);
 						XMVECTOR vAnim = XMQuaternionSlerp(vLeft, vRight, t);
@@ -1730,42 +2173,145 @@ namespace wiScene
 					break;
 					case AnimationComponent::AnimationChannel::Path::SCALE:
 					{
-						assert(sampler.keyframe_data.size() == sampler.keyframe_times.size() * 3);
-						const XMFLOAT3* data = (const XMFLOAT3*)sampler.keyframe_data.data();
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * 3);
+						const XMFLOAT3* data = (const XMFLOAT3*)animationdata->keyframe_data.data();
 						XMVECTOR vLeft = XMLoadFloat3(&data[keyLeft]);
 						XMVECTOR vRight = XMLoadFloat3(&data[keyRight]);
 						XMVECTOR vAnim = XMVectorLerp(vLeft, vRight, t);
 						XMStoreFloat3(&transform.scale_local, vAnim);
 					}
 					break;
+					case AnimationComponent::AnimationChannel::Path::WEIGHTS:
+					{
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * animation.morph_weights_temp.size());
+						for (size_t j = 0; j < animation.morph_weights_temp.size(); ++j)
+						{
+							float vLeft = animationdata->keyframe_data[keyLeft * animation.morph_weights_temp.size() + j];
+							float vRight = animationdata->keyframe_data[keyLeft * animation.morph_weights_temp.size() + j];
+							float vAnim = wiMath::Lerp(vLeft, vRight, t);
+							animation.morph_weights_temp[j] = vAnim;
+						}
+					}
+					break;
 					}
 				}
+				break;
+				case AnimationComponent::AnimationSampler::Mode::CUBICSPLINE:
+				{
+					// Cubic Spline interpolation method:
+					float t;
+					if (keyLeft == keyRight)
+					{
+						t = 0;
+					}
+					else
+					{
+						float right = animationdata->keyframe_times[keyRight];
+						t = (animation.timer - left) / (right - left);
+					}
 
-				target_transform.SetDirty();
+					const float t2 = t * t;
+					const float t3 = t2 * t;
 
-				const float t = animation.amount;
+					switch (channel.path)
+					{
+					default:
+					case AnimationComponent::AnimationChannel::Path::TRANSLATION:
+					{
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * 3 * 3);
+						const XMFLOAT3* data = (const XMFLOAT3*)animationdata->keyframe_data.data();
+						XMVECTOR vLeft = XMLoadFloat3(&data[keyLeft * 3 + 1]);
+						XMVECTOR vLeftTanOut = dt * XMLoadFloat3(&data[keyLeft * 3 + 2]);
+						XMVECTOR vRightTanIn = dt * XMLoadFloat3(&data[keyRight * 3 + 0]);
+						XMVECTOR vRight = XMLoadFloat3(&data[keyRight * 3 + 1]);
+						XMVECTOR vAnim = (2 * t3 - 3 * t2 + 1) * vLeft + (t3 - 2 * t2 + t) * vLeftTanOut + (-2 * t3 + 3 * t2) * vRight + (t3 - t2) * vRightTanIn;
+						XMStoreFloat3(&transform.translation_local, vAnim);
+					}
+					break;
+					case AnimationComponent::AnimationChannel::Path::ROTATION:
+					{
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * 4 * 3);
+						const XMFLOAT4* data = (const XMFLOAT4*)animationdata->keyframe_data.data();
+						XMVECTOR vLeft = XMLoadFloat4(&data[keyLeft * 3 + 1]);
+						XMVECTOR vLeftTanOut = dt * XMLoadFloat4(&data[keyLeft * 3 + 2]);
+						XMVECTOR vRightTanIn = dt * XMLoadFloat4(&data[keyRight * 3 + 0]);
+						XMVECTOR vRight = XMLoadFloat4(&data[keyRight * 3 + 1]);
+						XMVECTOR vAnim = (2 * t3 - 3 * t2 + 1) * vLeft + (t3 - 2 * t2 + t) * vLeftTanOut + (-2 * t3 + 3 * t2) * vRight + (t3 - t2) * vRightTanIn;
+						vAnim = XMQuaternionNormalize(vAnim);
+						XMStoreFloat4(&transform.rotation_local, vAnim);
+					}
+					break;
+					case AnimationComponent::AnimationChannel::Path::SCALE:
+					{
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * 3 * 3);
+						const XMFLOAT3* data = (const XMFLOAT3*)animationdata->keyframe_data.data();
+						XMVECTOR vLeft = XMLoadFloat3(&data[keyLeft * 3 + 1]);
+						XMVECTOR vLeftTanOut = dt * XMLoadFloat3(&data[keyLeft * 3 + 2]);
+						XMVECTOR vRightTanIn = dt * XMLoadFloat3(&data[keyRight * 3 + 0]);
+						XMVECTOR vRight = XMLoadFloat3(&data[keyRight * 3 + 1]);
+						XMVECTOR vAnim = (2 * t3 - 3 * t2 + 1) * vLeft + (t3 - 2 * t2 + t) * vLeftTanOut + (-2 * t3 + 3 * t2) * vRight + (t3 - t2) * vRightTanIn;
+						XMStoreFloat3(&transform.scale_local, vAnim);
+					}
+					break;
+					case AnimationComponent::AnimationChannel::Path::WEIGHTS:
+					{
+						assert(animationdata->keyframe_data.size() == animationdata->keyframe_times.size() * animation.morph_weights_temp.size() * 3);
+						for (size_t j = 0; j < animation.morph_weights_temp.size(); ++j)
+						{
+							float vLeft = animationdata->keyframe_data[(keyLeft * animation.morph_weights_temp.size() + j) * 3 + 1];
+							float vLeftTanOut = animationdata->keyframe_data[(keyLeft * animation.morph_weights_temp.size() + j) * 3 + 2];
+							float vRightTanIn = animationdata->keyframe_data[(keyLeft * animation.morph_weights_temp.size() + j) * 3 + 0];
+							float vRight = animationdata->keyframe_data[(keyLeft * animation.morph_weights_temp.size() + j) * 3 + 1];
+							float vAnim = (2 * t3 - 3 * t2 + 1) * vLeft + (t3 - 2 * t2 + t) * vLeftTanOut + (-2 * t3 + 3 * t2) * vRight + (t3 - t2) * vRightTanIn;
+							animation.morph_weights_temp[j] = vAnim;
+						}
+					}
+					break;
+					}
+				}
+				break;
+				}
 
-				const XMVECTOR aS = XMLoadFloat3(&target_transform.scale_local);
-				const XMVECTOR aR = XMLoadFloat4(&target_transform.rotation_local);
-				const XMVECTOR aT = XMLoadFloat3(&target_transform.translation_local);
+				if (target_transform != nullptr)
+				{
+					target_transform->SetDirty();
 
-				const XMVECTOR bS = XMLoadFloat3(&transform.scale_local);
-				const XMVECTOR bR = XMLoadFloat4(&transform.rotation_local);
-				const XMVECTOR bT = XMLoadFloat3(&transform.translation_local);
+					const float t = animation.amount;
 
-				const XMVECTOR S = XMVectorLerp(aS, bS, t);
-				const XMVECTOR R = XMQuaternionSlerp(aR, bR, t);
-				const XMVECTOR T = XMVectorLerp(aT, bT, t);
+					const XMVECTOR aS = XMLoadFloat3(&target_transform->scale_local);
+					const XMVECTOR aR = XMLoadFloat4(&target_transform->rotation_local);
+					const XMVECTOR aT = XMLoadFloat3(&target_transform->translation_local);
 
-				XMStoreFloat3(&target_transform.scale_local, S);
-				XMStoreFloat4(&target_transform.rotation_local, R);
-				XMStoreFloat3(&target_transform.translation_local, T);
+					const XMVECTOR bS = XMLoadFloat3(&transform.scale_local);
+					const XMVECTOR bR = XMLoadFloat4(&transform.rotation_local);
+					const XMVECTOR bT = XMLoadFloat3(&transform.translation_local);
+
+					const XMVECTOR S = XMVectorLerp(aS, bS, t);
+					const XMVECTOR R = XMQuaternionSlerp(aR, bR, t);
+					const XMVECTOR T = XMVectorLerp(aT, bT, t);
+
+					XMStoreFloat3(&target_transform->scale_local, S);
+					XMStoreFloat4(&target_transform->rotation_local, R);
+					XMStoreFloat3(&target_transform->translation_local, T);
+				}
+
+				if (target_mesh != nullptr)
+				{
+					const float t = animation.amount;
+
+					for (size_t j = 0; j < target_mesh->targets.size(); ++j)
+					{
+						target_mesh->targets[j].weight = wiMath::Lerp(target_mesh->targets[j].weight, animation.morph_weights_temp[j], t);
+					}
+
+					target_mesh->SetDirtyMorph(true);
+				}
 
 			}
 
 			if (animation.IsPlaying())
 			{
-				animation.timer += dt;
+				animation.timer += dt * animation.speed;
 			}
 
 			if (animation.IsLooped() && animation.timer > animation.end)
@@ -1774,22 +2320,15 @@ namespace wiScene
 			}
 		}
 	}
-	void RunTransformUpdateSystem(
-		wiJobSystem::context& ctx, 
-		ComponentManager<TransformComponent>& transforms)
+	void Scene::RunTransformUpdateSystem(wiJobSystem::context& ctx)
 	{
-		wiJobSystem::Dispatch(ctx, (uint32_t)transforms.GetCount(), small_subtask_groupsize, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)transforms.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
 
 			TransformComponent& transform = transforms[args.jobIndex];
 			transform.UpdateTransform();
 		});
 	}
-	void RunHierarchyUpdateSystem(
-		wiJobSystem::context& ctx,
-		const ComponentManager<HierarchyComponent>& hierarchy,
-		ComponentManager<TransformComponent>& transforms,
-		ComponentManager<LayerComponent>& layers
-		)
+	void Scene::RunHierarchyUpdateSystem(wiJobSystem::context& ctx)
 	{
 		// This needs serialized execution because there are dependencies enforced by component order!
 
@@ -1810,19 +2349,12 @@ namespace wiScene
 			LayerComponent* layer_parent = layers.GetComponent(parentcomponent.parentID);
 			if (layer_child != nullptr && layer_parent != nullptr)
 			{
-				layer_child->layerMask = parentcomponent.layerMask_bind & layer_parent->GetLayerMask();
+				layer_child->propagationMask = layer_parent->GetLayerMask();
 			}
 
 		}
 	}
-	void RunSpringUpdateSystem(
-		wiJobSystem::context& ctx,
-		const WeatherComponent& weather,
-		const ComponentManager<HierarchyComponent>& hierarchy,
-		ComponentManager<TransformComponent>& transforms,
-		ComponentManager<SpringComponent>& springs,
-		float dt
-	)
+	void Scene::RunSpringUpdateSystem(wiJobSystem::context& ctx)
 	{
 		static float time = 0;
 		time += dt;
@@ -1910,12 +2442,7 @@ namespace wiScene
 			*((XMFLOAT3*)&transform->world._41) = spring.center_of_mass;
 		}
 	}
-	void RunInverseKinematicsUpdateSystem(
-		wiJobSystem::context& ctx,
-		const ComponentManager<InverseKinematicsComponent>& inverse_kinematics,
-		const ComponentManager<HierarchyComponent>& hierarchy,
-		ComponentManager<TransformComponent>& transforms
-	)
+	void Scene::RunInverseKinematicsUpdateSystem(wiJobSystem::context& ctx)
 	{
 		bool recompute_hierarchy = false;
 		for (size_t i = 0; i < inverse_kinematics.GetCount(); ++i)
@@ -2014,13 +2541,9 @@ namespace wiScene
 			}
 		}
 	}
-	void RunArmatureUpdateSystem(
-		wiJobSystem::context& ctx,
-		const ComponentManager<TransformComponent>& transforms,
-		ComponentManager<ArmatureComponent>& armatures
-	)
+	void Scene::RunArmatureUpdateSystem(wiJobSystem::context& ctx)
 	{
-		wiJobSystem::Dispatch(ctx, (uint32_t)armatures.GetCount(), 1, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)armatures.GetCount(), 1, [&](wiJobArgs args) {
 
 			ArmatureComponent& armature = armatures[args.jobIndex];
 			Entity entity = armatures.GetEntity(args.jobIndex);
@@ -2057,22 +2580,221 @@ namespace wiScene
 
 				armature.boneData[boneIndex++].Store(M);
 
+				const float bone_radius = 1;
 				XMFLOAT3 bonepos = bone.GetPosition();
-				_min = wiMath::Min(_min, bonepos);
-				_max = wiMath::Max(_max, bonepos);
+				AABB boneAABB;
+				boneAABB.createFromHalfWidth(bonepos, XMFLOAT3(bone_radius, bone_radius, bone_radius));
+				_min = wiMath::Min(_min, boneAABB._min);
+				_max = wiMath::Max(_max, boneAABB._max);
 			}
 
 			armature.aabb = AABB(_min, _max);
 
+			if (!armature.boneBuffer.IsValid())
+			{
+				armature.CreateRenderData();
+			}
 		});
 	}
-	void RunMaterialUpdateSystem(
-		wiJobSystem::context& ctx, 
-		ComponentManager<MaterialComponent>& materials, float dt)
+	void Scene::RunMeshUpdateSystem(wiJobSystem::context& ctx)
 	{
-		wiJobSystem::Dispatch(ctx, (uint32_t)materials.GetCount(), small_subtask_groupsize, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)meshes.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
+
+			Entity entity = meshes.GetEntity(args.jobIndex);
+			MeshComponent& mesh = meshes[args.jobIndex];
+			GraphicsDevice* device = wiRenderer::GetDevice();
+
+			if (mesh.IsSkinned() && armatures.Contains(mesh.armatureID))
+			{
+				const SoftBodyPhysicsComponent* softbody = softbodies.GetComponent(entity);
+				if (softbody == nullptr || softbody->vertex_positions_simulation.empty())
+				{
+					if (!mesh.vertexBuffer_PRE.IsValid())
+					{
+						device->CreateBuffer(&mesh.streamoutBuffer_POS.GetDesc(), nullptr, &mesh.vertexBuffer_PRE);
+					}
+				}
+			}
+
+			if (mesh.streamoutBuffer_POS.IsValid() && mesh.vertexBuffer_PRE.IsValid())
+			{
+				mesh._flags |= MeshComponent::DIRTY_BINDLESS;
+				std::swap(mesh.streamoutBuffer_POS, mesh.vertexBuffer_PRE);
+			}
+
+			if (mesh.BLAS.IsValid())
+			{
+				uint32_t subsetIndex = 0;
+				for (auto& subset : mesh.subsets)
+				{
+					const MaterialComponent* material = materials.GetComponent(subset.materialID);
+					if (material != nullptr)
+					{
+						auto& geometry = mesh.BLAS.desc.bottomlevel.geometries[subsetIndex];
+						uint32_t flags = geometry._flags;
+						if (material->IsAlphaTestEnabled() || (material->GetRenderTypes() & RENDERTYPE_TRANSPARENT))
+						{
+							geometry._flags &= ~RaytracingAccelerationStructureDesc::BottomLevel::Geometry::FLAG_OPAQUE;
+						}
+						else
+						{
+							geometry._flags = RaytracingAccelerationStructureDesc::BottomLevel::Geometry::FLAG_OPAQUE;
+						}
+						if (flags != geometry._flags)
+						{
+							mesh._flags |= MeshComponent::DIRTY_BLAS;
+						}
+						if (mesh.streamoutBuffer_POS.IsValid())
+						{
+							mesh._flags |= MeshComponent::DIRTY_BLAS;
+							geometry.triangles.vertexBuffer = mesh.streamoutBuffer_POS;
+						}
+					}
+					subsetIndex++;
+				}
+
+				if ((flags & UPDATE_ACCELERATION_STRUCTURES) && cmd != INVALID_COMMANDLIST && (mesh._flags & MeshComponent::DIRTY_BLAS))
+				{
+					mesh._flags &= ~MeshComponent::DIRTY_BLAS;
+					locker.lock();
+					BLAS_builds.push_back(entity);
+					locker.unlock();
+				}
+			}
+
+			if (device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_BINDLESS_DESCRIPTORS))
+			{
+				if (mesh.terrain_material1 != INVALID_ENTITY)
+				{
+					const MaterialComponent* mat = materials.GetComponent(mesh.terrain_material1);
+					if (mat != nullptr)
+					{
+						int index = device->GetDescriptorIndex(&mat->constantBuffer, SRV);
+						if (mesh.terrain_material1_index != index)
+						{
+							mesh._flags |= MeshComponent::DIRTY_BINDLESS;
+							mesh.terrain_material1_index = index;
+						}
+					}
+				}
+				if (mesh.terrain_material2 != INVALID_ENTITY)
+				{
+					const MaterialComponent* mat = materials.GetComponent(mesh.terrain_material2);
+					if (mat != nullptr)
+					{
+						int index = device->GetDescriptorIndex(&mat->constantBuffer, SRV);
+						if (mesh.terrain_material2_index != index)
+						{
+							mesh._flags |= MeshComponent::DIRTY_BINDLESS;
+							mesh.terrain_material2_index = index;
+						}
+					}
+				}
+				if (mesh.terrain_material3 != INVALID_ENTITY)
+				{
+					const MaterialComponent* mat = materials.GetComponent(mesh.terrain_material3);
+					if (mat != nullptr)
+					{
+						int index = device->GetDescriptorIndex(&mat->constantBuffer, SRV);
+						if (mesh.terrain_material3_index != index)
+						{
+							mesh._flags |= MeshComponent::DIRTY_BINDLESS;
+							mesh.terrain_material3_index = index;
+						}
+					}
+				}
+			}
+
+			if (cmd != INVALID_COMMANDLIST && device->CheckCapability(GRAPHICSDEVICE_CAPABILITY_BINDLESS_DESCRIPTORS) && mesh._flags & MeshComponent::DIRTY_BINDLESS)
+			{
+				mesh._flags &= ~MeshComponent::DIRTY_BINDLESS;
+
+				ShaderMesh shadermesh;
+				mesh.WriteShaderMesh(&shadermesh);
+
+				int mesh_descriptor = device->GetDescriptorIndex(&mesh.descriptor, SRV);
+
+				mesh.shadersubsets.resize(mesh.subsets.size());
+				int j = 0;
+				for (auto& x : mesh.subsets)
+				{
+					ShaderMeshSubset& shadersubset = mesh.shadersubsets[j++];
+					shadersubset.indexOffset = x.indexOffset;
+					shadersubset.indexCount = x.indexCount;
+					shadersubset.mesh = mesh_descriptor;
+
+					const MaterialComponent* material = materials.GetComponent(x.materialID);
+					if (material != nullptr)
+					{
+						shadersubset.material = device->GetDescriptorIndex(&material->constantBuffer, SRV);
+					}
+				}
+
+				cmd_locker.lock();
+				device->UpdateBuffer(&mesh.descriptor, &shadermesh, cmd);
+				device->UpdateBuffer(&mesh.subsetBuffer, mesh.shadersubsets.data(), cmd);
+				cmd_locker.unlock();
+			}
+
+			// Update morph targets if needed:
+			if (cmd != INVALID_COMMANDLIST && mesh.IsDirtyMorph() && !mesh.targets.empty())
+			{
+			    XMFLOAT3 _min = XMFLOAT3(FLT_MAX, FLT_MAX, FLT_MAX);
+			    XMFLOAT3 _max = XMFLOAT3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+
+			    for (size_t i = 0; i < mesh.vertex_positions.size(); ++i)
+			    {
+					XMFLOAT3 pos = mesh.vertex_positions[i];
+					XMFLOAT3 nor = mesh.vertex_normals.empty() ? XMFLOAT3(1, 1, 1) : mesh.vertex_normals[i];
+					const uint8_t wind = mesh.vertex_windweights.empty() ? 0xFF : mesh.vertex_windweights[i];
+
+					for (const MeshComponent::MeshMorphTarget& target : mesh.targets)
+					{
+						pos.x += target.weight * target.vertex_positions[i].x;
+						pos.y += target.weight * target.vertex_positions[i].y;
+						pos.z += target.weight * target.vertex_positions[i].z;
+
+						if (!target.vertex_normals.empty())
+						{
+							nor.x += target.weight * target.vertex_normals[i].x;
+							nor.y += target.weight * target.vertex_normals[i].y;
+							nor.z += target.weight * target.vertex_normals[i].z;
+						}
+					}
+
+					XMStoreFloat3(&nor, XMVector3Normalize(XMLoadFloat3(&nor)));
+					mesh.vertex_positions_morphed[i].FromFULL(pos, nor, wind);
+
+					_min = wiMath::Min(_min, pos);
+					_max = wiMath::Max(_max, pos);
+			    }
+
+			    mesh.aabb = AABB(_min, _max);
+
+				mesh.SetDirtyMorph(false);
+				cmd_locker.lock();
+				wiRenderer::GetDevice()->UpdateBuffer(&mesh.vertexBuffer_POS, mesh.vertex_positions_morphed.data(), cmd);
+				cmd_locker.unlock();
+			}
+
+		});
+	}
+	void Scene::RunMaterialUpdateSystem(wiJobSystem::context& ctx)
+	{
+		wiJobSystem::Dispatch(ctx, (uint32_t)materials.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
 
 			MaterialComponent& material = materials[args.jobIndex];
+			Entity entity = materials.GetEntity(args.jobIndex);
+			const LayerComponent* layer = layers.GetComponent(entity);
+			if (layer != nullptr)
+			{
+				material.layerMask = layer->layerMask;
+			}
+
+			if (!material.constantBuffer.IsValid())
+			{
+				material.CreateRenderData();
+			}
 
 			material.texAnimElapsedTime += dt * material.texAnimFrameRate;
 			if (material.texAnimElapsedTime >= 1.0f)
@@ -2085,188 +2807,201 @@ namespace wiScene
 			}
 
 			material.engineStencilRef = STENCILREF_DEFAULT;
-			if (material.subsurfaceScattering > 0)
+			if (material.IsCustomShader())
 			{
-				material.engineStencilRef = STENCILREF_SKIN;
+				material.engineStencilRef = STENCILREF_CUSTOMSHADER;
 			}
+
+			if (cmd != INVALID_COMMANDLIST && material.IsDirty())
+			{
+				material.SetDirty(false);
+				ShaderMaterial shadermaterial;
+				material.WriteShaderMaterial(&shadermaterial);
+				cmd_locker.lock();
+				wiRenderer::GetDevice()->UpdateBuffer(&material.constantBuffer, &shadermaterial, cmd);
+				cmd_locker.unlock();
+			}
+
 		});
 	}
-	void RunImpostorUpdateSystem(
-		wiJobSystem::context& ctx, 
-		ComponentManager<ImpostorComponent>& impostors)
+	void Scene::RunImpostorUpdateSystem(wiJobSystem::context& ctx)
 	{
-		wiJobSystem::Dispatch(ctx, (uint32_t)impostors.GetCount(), 1, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)impostors.GetCount(), 1, [&](wiJobArgs args) {
 
 			ImpostorComponent& impostor = impostors[args.jobIndex];
 			impostor.aabb = AABB();
 			impostor.instanceMatrices.clear();
 		});
 	}
-	void RunObjectUpdateSystem(
-		wiJobSystem::context& ctx,
-		const ComponentManager<PreviousFrameTransformComponent>& prev_transforms,
-		const ComponentManager<TransformComponent>& transforms,
-		const ComponentManager<MeshComponent>& meshes,
-		const ComponentManager<MaterialComponent>& materials,
-		const ComponentManager<ArmatureComponent>& armatures,
-		ComponentManager<ObjectComponent>& objects,
-		ComponentManager<AABB>& aabb_objects,
-		ComponentManager<ImpostorComponent>& impostors,
-		ComponentManager<SoftBodyPhysicsComponent>& softbodies,
-		AABB& sceneBounds,
-		XMFLOAT4& waterPlane
-	)
+	void Scene::RunObjectUpdateSystem(wiJobSystem::context& ctx)
 	{
 		assert(objects.GetCount() == aabb_objects.GetCount());
 
-		sceneBounds = AABB();
+		parallel_bounds.clear();
+		parallel_bounds.resize((size_t)wiJobSystem::DispatchGroupCount((uint32_t)objects.GetCount(), small_subtask_groupsize));
+		
+		wiJobSystem::Dispatch(ctx, (uint32_t)objects.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
 
-		// Instead of Dispatching, this will be one big job, because there is contention for several resources (sceneBounds, waterPlane, impostors)
-		wiJobSystem::Execute(ctx, [&] {
+			ObjectComponent& object = objects[args.jobIndex];
+			AABB& aabb = aabb_objects[args.jobIndex];
 
-			for (size_t i = 0; i < objects.GetCount(); ++i)
+			// Update occlusion culling status:
+			object.occlusionHistory <<= 1; // advance history by 1 frame
+			int query_id = object.occlusionQueries[queryheap_idx];
+			if (query_id >= 0 && (int)writtenQueries[queryheap_idx] > query_id)
 			{
-				ObjectComponent& object = objects[i];
-				AABB& aabb = aabb_objects[i];
-
-				aabb = AABB();
-				object.rendertypeMask = 0;
-				object.SetDynamic(false);
-				object.SetCastShadow(false);
-				object.SetImpostorPlacement(false);
-				object.SetRequestPlanarReflection(false);
-
-				if (object.meshID != INVALID_ENTITY)
+				uint64_t visible = queryResults[query_id];
+				if (visible)
 				{
-					Entity entity = objects.GetEntity(i);
-					const MeshComponent* mesh = meshes.GetComponent(object.meshID);
+					object.occlusionHistory |= 1; // visible
+				}
+			}
+			else
+			{
+				object.occlusionHistory |= 1; // visible
+			}
+			object.occlusionQueries[queryheap_idx] = -1; // invalidate query
 
-					// These will only be valid for a single frame:
-					object.transform_index = (int)transforms.GetIndex(entity);
-					object.prev_transform_index = (int)prev_transforms.GetIndex(entity);
+			aabb = AABB();
+			object.rendertypeMask = 0;
+			object.SetDynamic(false);
+			object.SetImpostorPlacement(false);
+			object.SetRequestPlanarReflection(false);
 
-					const TransformComponent& transform = transforms[object.transform_index];
+			if (object.meshID != INVALID_ENTITY)
+			{
+				Entity entity = objects.GetEntity(args.jobIndex);
+				const MeshComponent* mesh = meshes.GetComponent(object.meshID);
 
-					if (mesh != nullptr)
+				// These will only be valid for a single frame:
+				object.transform_index = (int)transforms.GetIndex(entity);
+				object.prev_transform_index = (int)prev_transforms.GetIndex(entity);
+
+				const TransformComponent& transform = transforms[object.transform_index];
+
+				if (mesh != nullptr)
+				{
+					XMMATRIX W = XMLoadFloat4x4(&transform.world);
+					aabb = mesh->aabb.transform(W);
+
+					// This is instance bounding box matrix:
+					XMFLOAT4X4 meshMatrix;
+					XMStoreFloat4x4(&meshMatrix, mesh->aabb.getAsBoxMatrix() * W);
+
+					// We need sometimes the center of the instance bounding box, not the transform position (which can be outside the bounding box)
+					object.center = *((XMFLOAT3*)&meshMatrix._41);
+
+					if (mesh->IsSkinned() || mesh->IsDynamic())
 					{
-						XMMATRIX W = XMLoadFloat4x4(&transform.world);
-						aabb = mesh->aabb.transform(W);
-
-						// This is instance bounding box matrix:
-						XMFLOAT4X4 meshMatrix;
-						XMStoreFloat4x4(&meshMatrix, mesh->aabb.getAsBoxMatrix() * W);
-
-						// We need sometimes the center of the instance bounding box, not the transform position (which can be outside the bounding box)
-						object.center = *((XMFLOAT3*)&meshMatrix._41);
-
-						if (mesh->IsSkinned() || mesh->IsDynamic())
+						object.SetDynamic(true);
+						const ArmatureComponent* armature = armatures.GetComponent(mesh->armatureID);
+						if (armature != nullptr)
 						{
-							object.SetDynamic(true);
-							const ArmatureComponent* armature = armatures.GetComponent(mesh->armatureID);
-							if (armature != nullptr)
-							{
-								aabb = AABB::Merge(aabb, armature->aabb);
-							}
+							aabb = AABB::Merge(aabb, armature->aabb);
 						}
-
-						for (auto& subset : mesh->subsets)
-						{
-							const MaterialComponent* material = materials.GetComponent(subset.materialID);
-
-							if (material != nullptr)
-							{
-								if (material->IsCustomShader())
-								{
-									object.rendertypeMask |= RENDERTYPE_ALL;
-								}
-								else
-								{
-									if (material->IsTransparent())
-									{
-										object.rendertypeMask |= RENDERTYPE_TRANSPARENT;
-									}
-									else
-									{
-										object.rendertypeMask |= RENDERTYPE_OPAQUE;
-									}
-
-									if (material->IsWater())
-									{
-										object.rendertypeMask |= RENDERTYPE_TRANSPARENT | RENDERTYPE_WATER;
-									}
-								}
-
-								if (material->HasPlanarReflection())
-								{
-									object.SetRequestPlanarReflection(true);
-									XMVECTOR P = transform.GetPositionV();
-									XMVECTOR N = XMVectorSet(0, 1, 0, 0);
-									N = XMVector3TransformNormal(N, XMLoadFloat4x4(&transform.world));
-									XMVECTOR _refPlane = XMPlaneFromPointNormal(P, N);
-									XMStoreFloat4(&waterPlane, _refPlane);
-								}
-
-								object.SetCastShadow(material->IsCastingShadow());
-							}
-						}
-
-						ImpostorComponent* impostor = impostors.GetComponent(object.meshID);
-						if (impostor != nullptr)
-						{
-							object.SetImpostorPlacement(true);
-							object.impostorSwapDistance = impostor->swapInDistance;
-							object.impostorFadeThresholdRadius = aabb.getRadius();
-
-							impostor->aabb = AABB::Merge(impostor->aabb, aabb);
-							impostor->color = object.color;
-							impostor->fadeThresholdRadius = object.impostorFadeThresholdRadius;
-							
-							const SPHERE boundingsphere = mesh->GetBoundingSphere();
-
-							impostor->instanceMatrices.emplace_back();
-							XMStoreFloat4x4(&impostor->instanceMatrices.back(), 
-								XMMatrixScaling(boundingsphere.radius, boundingsphere.radius, boundingsphere.radius) *
-								XMMatrixTranslation(boundingsphere.center.x, boundingsphere.center.y, boundingsphere.center.z) *
-								W
-								);
-						}
-
-						SoftBodyPhysicsComponent* softbody = softbodies.GetComponent(object.meshID);
-						if (softbody != nullptr)
-						{
-							// this will be registered as soft body in the next physics update
-							softbody->_flags |= SoftBodyPhysicsComponent::SAFE_TO_REGISTER;
-							
-							// soft body manipulated with the object matrix
-							softbody->worldMatrix = transform.world;
-
-							if (softbody->graphicsToPhysicsVertexMapping.empty())
-							{
-								softbody->CreateFromMesh(*mesh);
-							}
-
-							// simulation aabb will be used for soft bodies
-							aabb = softbody->aabb;
-
-							// soft bodies have no transform, their vertices are simulated in world space
-							object.transform_index = -1;
-							object.prev_transform_index = -1;
-						}
-
-						sceneBounds = AABB::Merge(sceneBounds, aabb);
 					}
+
+					for (auto& subset : mesh->subsets)
+					{
+						const MaterialComponent* material = materials.GetComponent(subset.materialID);
+
+						if (material != nullptr)
+						{
+							object.rendertypeMask |= material->GetRenderTypes();
+
+							if (material->HasPlanarReflection())
+							{
+								object.SetRequestPlanarReflection(true);
+							}
+						}
+					}
+
+					ImpostorComponent* impostor = impostors.GetComponent(object.meshID);
+					if (impostor != nullptr)
+					{
+						object.SetImpostorPlacement(true);
+						object.impostorSwapDistance = impostor->swapInDistance;
+						object.impostorFadeThresholdRadius = aabb.getRadius();
+
+						impostor->aabb = AABB::Merge(impostor->aabb, aabb);
+						impostor->color = object.color;
+						impostor->fadeThresholdRadius = object.impostorFadeThresholdRadius;
+
+						const SPHERE boundingsphere = mesh->GetBoundingSphere();
+
+						locker.lock();
+						impostor->instanceMatrices.emplace_back();
+						XMStoreFloat4x4(&impostor->instanceMatrices.back(),
+							XMMatrixScaling(boundingsphere.radius, boundingsphere.radius, boundingsphere.radius) *
+							XMMatrixTranslation(boundingsphere.center.x, boundingsphere.center.y, boundingsphere.center.z) *
+							W
+						);
+						locker.unlock();
+					}
+
+					SoftBodyPhysicsComponent* softbody = softbodies.GetComponent(object.meshID);
+					if (softbody != nullptr)
+					{
+						// this will be registered as soft body in the next physics update
+						softbody->_flags |= SoftBodyPhysicsComponent::SAFE_TO_REGISTER;
+
+						// soft body manipulated with the object matrix
+						softbody->worldMatrix = transform.world;
+
+						if (softbody->graphicsToPhysicsVertexMapping.empty())
+						{
+							softbody->CreateFromMesh(*mesh);
+						}
+
+						// simulation aabb will be used for soft bodies
+						aabb = softbody->aabb;
+
+						// soft bodies have no transform, their vertices are simulated in world space
+						object.transform_index = -1;
+						object.prev_transform_index = -1;
+					}
+
+					if ((flags & UPDATE_ACCELERATION_STRUCTURES) && TLAS.IsValid())
+					{
+						GraphicsDevice* device = wiRenderer::GetDevice();
+						RaytracingAccelerationStructureDesc::TopLevel::Instance instance = {};
+						const XMFLOAT4X4& worldMatrix = object.transform_index >= 0 ? transforms[object.transform_index].world : IDENTITYMATRIX;
+						instance = {};
+						instance.transform = XMFLOAT3X4(
+							worldMatrix._11, worldMatrix._21, worldMatrix._31, worldMatrix._41,
+							worldMatrix._12, worldMatrix._22, worldMatrix._32, worldMatrix._42,
+							worldMatrix._13, worldMatrix._23, worldMatrix._33, worldMatrix._43
+						);
+						instance.InstanceID = (uint32_t)device->GetDescriptorIndex(&mesh->descriptor, SRV);
+						instance.InstanceMask = 1;
+						instance.bottomlevel = mesh->BLAS;
+
+						void* dest = (void*)((size_t)TLAS_instances.data() + (size_t)args.jobIndex * device->GetTopLevelAccelerationStructureInstanceSize());
+						device->WriteTopLevelAccelerationStructureInstance(&instance, dest);
+					}
+				}
+
+				// parallel bounds computation using shared memory:
+				AABB* shared_bounds = (AABB*)args.sharedmemory;
+				if (args.isFirstJobInGroup)
+				{
+					*shared_bounds = aabb_objects[args.jobIndex];
+				}
+				else
+				{
+					*shared_bounds = AABB::Merge(*shared_bounds, aabb_objects[args.jobIndex]);
+				}
+				if (args.isLastJobInGroup)
+				{
+					parallel_bounds[args.groupID] = *shared_bounds;
 				}
 			}
 
-		});
+		}, sizeof(AABB));
 	}
-	void RunCameraUpdateSystem(
-		wiJobSystem::context& ctx,
-		const ComponentManager<TransformComponent>& transforms,
-		ComponentManager<CameraComponent>& cameras
-	)
+	void Scene::RunCameraUpdateSystem(wiJobSystem::context& ctx)
 	{
-		wiJobSystem::Dispatch(ctx, (uint32_t)cameras.GetCount(), small_subtask_groupsize, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)cameras.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
 
 			CameraComponent& camera = cameras[args.jobIndex];
 			Entity entity = cameras.GetEntity(args.jobIndex);
@@ -2278,17 +3013,11 @@ namespace wiScene
 			camera.UpdateCamera();
 		});
 	}
-	void RunDecalUpdateSystem(
-		wiJobSystem::context& ctx,
-		const ComponentManager<TransformComponent>& transforms,
-		const ComponentManager<MaterialComponent>& materials,
-		ComponentManager<AABB>& aabb_decals,
-		ComponentManager<DecalComponent>& decals
-	)
+	void Scene::RunDecalUpdateSystem(wiJobSystem::context& ctx)
 	{
 		assert(decals.GetCount() == aabb_decals.GetCount());
 
-		wiJobSystem::Dispatch(ctx, (uint32_t)decals.GetCount(), small_subtask_groupsize, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)decals.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
 
 			DecalComponent& decal = decals[args.jobIndex];
 			Entity entity = decals.GetEntity(args.jobIndex);
@@ -2314,20 +3043,15 @@ namespace wiScene
 			const MaterialComponent& material = *materials.GetComponent(entity);
 			decal.color = material.baseColor;
 			decal.emissive = material.GetEmissiveStrength();
-			decal.texture = material.baseColorMap;
-			decal.normal = material.normalMap;
+			decal.texture = material.textures[MaterialComponent::BASECOLORMAP].resource;
+			decal.normal = material.textures[MaterialComponent::NORMALMAP].resource;
 		});
 	}
-	void RunProbeUpdateSystem(
-		wiJobSystem::context& ctx,
-		const ComponentManager<TransformComponent>& transforms,
-		ComponentManager<AABB>& aabb_probes,
-		ComponentManager<EnvironmentProbeComponent>& probes
-	)
+	void Scene::RunProbeUpdateSystem(wiJobSystem::context& ctx)
 	{
 		assert(probes.GetCount() == aabb_probes.GetCount());
 
-		wiJobSystem::Dispatch(ctx, (uint32_t)probes.GetCount(), small_subtask_groupsize, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)probes.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
 
 			EnvironmentProbeComponent& probe = probes[args.jobIndex];
 			Entity entity = probes.GetEntity(args.jobIndex);
@@ -2349,13 +3073,9 @@ namespace wiScene
 			aabb = aabb.transform(transform.world);
 		});
 	}
-	void RunForceUpdateSystem(
-		wiJobSystem::context& ctx,
-		const ComponentManager<TransformComponent>& transforms,
-		ComponentManager<ForceFieldComponent>& forces
-	)
+	void Scene::RunForceUpdateSystem(wiJobSystem::context& ctx)
 	{
-		wiJobSystem::Dispatch(ctx, (uint32_t)forces.GetCount(), small_subtask_groupsize, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)forces.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
 
 			ForceFieldComponent& force = forces[args.jobIndex];
 			Entity entity = forces.GetEntity(args.jobIndex);
@@ -2371,16 +3091,11 @@ namespace wiScene
 			force.range_global = force.range_local * std::max(XMVectorGetX(S), std::max(XMVectorGetY(S), XMVectorGetZ(S)));
 		});
 	}
-	void RunLightUpdateSystem(
-		wiJobSystem::context& ctx,
-		const ComponentManager<TransformComponent>& transforms,
-		ComponentManager<AABB>& aabb_lights,
-		ComponentManager<LightComponent>& lights
-	)
+	void Scene::RunLightUpdateSystem(wiJobSystem::context& ctx)
 	{
 		assert(lights.GetCount() == aabb_lights.GetCount());
 
-		wiJobSystem::Dispatch(ctx, (uint32_t)lights.GetCount(), small_subtask_groupsize, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)lights.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
 
 			LightComponent& light = lights[args.jobIndex];
 			Entity entity = lights.GetEntity(args.jobIndex);
@@ -2400,8 +3115,18 @@ namespace wiScene
 
 			switch (light.type)
 			{
+			default:
 			case LightComponent::DIRECTIONAL:
-				aabb.createFromHalfWidth(wiRenderer::GetCamera().Eye, XMFLOAT3(10000, 10000, 10000));
+				aabb.createFromHalfWidth(XMFLOAT3(0, 0, 0), XMFLOAT3(FLT_MAX, FLT_MAX, FLT_MAX));
+				locker.lock();
+				if (args.jobIndex < weather.most_important_light_index)
+				{
+					weather.most_important_light_index = args.jobIndex;
+					weather.sunColor = light.color;
+					weather.sunDirection = light.direction;
+					weather.sunEnergy = light.energy;
+				}
+				locker.unlock();
 				break;
 			case LightComponent::SPOT:
 				aabb.createFromHalfWidth(light.position, XMFLOAT3(light.GetRange(), light.GetRange(), light.GetRange()));
@@ -2409,29 +3134,13 @@ namespace wiScene
 			case LightComponent::POINT:
 				aabb.createFromHalfWidth(light.position, XMFLOAT3(light.GetRange(), light.GetRange(), light.GetRange()));
 				break;
-			case LightComponent::SPHERE:
-			case LightComponent::DISC:
-			case LightComponent::RECTANGLE:
-			case LightComponent::TUBE:
-				XMStoreFloat3(&light.right, XMVector3TransformNormal(XMVectorSet(-1, 0, 0, 0), W));
-				XMStoreFloat3(&light.front, XMVector3TransformNormal(XMVectorSet(0, 0, -1, 0), W));
-				// area lights have no bounds, just like directional lights (todo: but they should have real bounds)
-				aabb.createFromHalfWidth(wiRenderer::GetCamera().Eye, XMFLOAT3(10000, 10000, 10000));
-				break;
 			}
 
 		});
 	}
-	void RunParticleUpdateSystem(
-		wiJobSystem::context& ctx,
-		const ComponentManager<TransformComponent>& transforms,
-		const ComponentManager<MeshComponent>& meshes,
-		ComponentManager<wiEmittedParticle>& emitters,
-		ComponentManager<wiHairParticle>& hairs,
-		float dt
-	)
+	void Scene::RunParticleUpdateSystem(wiJobSystem::context& ctx)
 	{
-		wiJobSystem::Dispatch(ctx, (uint32_t)emitters.GetCount(), small_subtask_groupsize, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)emitters.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
 
 			wiEmittedParticle& emitter = emitters[args.jobIndex];
 			Entity entity = emitters.GetEntity(args.jobIndex);
@@ -2439,7 +3148,7 @@ namespace wiScene
 			emitter.UpdateCPU(transform, dt);
 		});
 
-		wiJobSystem::Dispatch(ctx, (uint32_t)hairs.GetCount(), small_subtask_groupsize, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)hairs.GetCount(), small_subtask_groupsize, [&](wiJobArgs args) {
 
 			wiHairParticle& hair = hairs[args.jobIndex];
 
@@ -2458,34 +3167,17 @@ namespace wiScene
 
 		});
 	}
-	void RunWeatherUpdateSystem(
-		wiJobSystem::context& ctx,
-		const ComponentManager<WeatherComponent>& weathers,
-		const ComponentManager<LightComponent>& lights,
-		WeatherComponent& weather)
+	void Scene::RunWeatherUpdateSystem(wiJobSystem::context& ctx)
 	{
 		if (weathers.GetCount() > 0)
 		{
 			weather = weathers[0];
-		}
-
-		for (size_t i = 0; i < lights.GetCount(); ++i)
-		{
-			const LightComponent& light = lights[i];
-			if (light.GetType() == LightComponent::DIRECTIONAL)
-			{
-				weather.sunColor = light.color;
-				weather.sunDirection = light.direction;
-			}
+			weather.most_important_light_index = ~0;
 		}
 	}
-	void RunSoundUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<TransformComponent>& transforms,
-		wiECS::ComponentManager<SoundComponent>& sounds
-	)
+	void Scene::RunSoundUpdateSystem(wiJobSystem::context& ctx)
 	{
-		const CameraComponent& camera = wiRenderer::GetCamera();
+		const CameraComponent& camera = GetCamera();
 		wiAudio::SoundInstance3D instance3D;
 		instance3D.listenerPos = camera.Eye;
 		instance3D.listenerUp = camera.Up;
@@ -2494,12 +3186,16 @@ namespace wiScene
 		for (size_t i = 0; i < sounds.GetCount(); ++i)
 		{
 			SoundComponent& sound = sounds[i];
-			Entity entity = sounds.GetEntity(i);
-			const TransformComponent* transform = transforms.GetComponent(entity);
-			if (transform != nullptr)
+
+			if (!sound.IsDisable3D())
 			{
-				instance3D.emitterPos = transform->GetPosition();
-				wiAudio::Update3D(&sound.soundinstance, instance3D);
+				Entity entity = sounds.GetEntity(i);
+				const TransformComponent* transform = transforms.GetComponent(entity);
+				if (transform != nullptr)
+				{
+					instance3D.emitterPos = transform->GetPosition();
+					wiAudio::Update3D(&sound.soundinstance, instance3D);
+				}
 			}
 			if (sound.IsPlaying())
 			{
@@ -2520,7 +3216,15 @@ namespace wiScene
 
 	XMVECTOR SkinVertex(const MeshComponent& mesh, const ArmatureComponent& armature, uint32_t index, XMVECTOR* N)
 	{
-		XMVECTOR P = XMLoadFloat3(&mesh.vertex_positions[index]);
+		XMVECTOR P;
+		if (mesh.vertex_positions_morphed.empty())
+		{
+		    P = XMLoadFloat3(&mesh.vertex_positions[index]);
+		}
+		else
+		{
+		    P = mesh.vertex_positions_morphed[index].LoadPOS();
+		}
 		const XMUINT4& ind = mesh.vertex_boneindices[index];
 		const XMFLOAT4& wei = mesh.vertex_boneweights[index];
 
@@ -2676,9 +3380,18 @@ namespace wiScene
 						{
 							if (armature == nullptr)
 							{
-								p0 = XMLoadFloat3(&mesh.vertex_positions[i0]);
-								p1 = XMLoadFloat3(&mesh.vertex_positions[i1]);
-								p2 = XMLoadFloat3(&mesh.vertex_positions[i2]);
+								if (mesh.vertex_positions_morphed.empty())
+							    {
+									p0 = XMLoadFloat3(&mesh.vertex_positions[i0]);
+									p1 = XMLoadFloat3(&mesh.vertex_positions[i1]);
+									p2 = XMLoadFloat3(&mesh.vertex_positions[i2]);
+								}
+								else
+								{
+								    p0 = mesh.vertex_positions_morphed[i0].LoadPOS();
+								    p1 = mesh.vertex_positions_morphed[i1].LoadPOS();
+								    p2 = mesh.vertex_positions_morphed[i2].LoadPOS();
+								}
 							}
 							else
 							{
@@ -2729,7 +3442,6 @@ namespace wiScene
 		return result;
 	}
 
-#include <DirectXCollision.h>
 	SceneIntersectSphereResult SceneIntersectSphere(const SPHERE& sphere, uint32_t renderTypeMask, uint32_t layerMask, const Scene& scene)
 	{
 		SceneIntersectSphereResult result;

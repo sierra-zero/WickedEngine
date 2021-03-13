@@ -4,6 +4,7 @@
 #include "wiInput.h"
 #include "wiMath.h"
 #include "ShaderInterop_Renderer.h"
+#include "wiEvent.h"
 
 using namespace wiGraphics;
 using namespace wiECS;
@@ -14,45 +15,48 @@ PipelineState pso_wirepart;
 GPUBuffer vertexBuffer_Axis;
 GPUBuffer vertexBuffer_Plane;
 GPUBuffer vertexBuffer_Origin;
-UINT vertexCount_Axis = 0;
-UINT vertexCount_Plane = 0;
-UINT vertexCount_Origin = 0;
+uint32_t vertexCount_Axis = 0;
+uint32_t vertexCount_Plane = 0;
+uint32_t vertexCount_Origin = 0;
 float origin_size = 0.2f;
 
-void Translator::LoadShaders()
+namespace Translator_Internal
 {
-	GraphicsDevice* device = wiRenderer::GetDevice();
-
+	void LoadShaders()
 	{
-		PipelineStateDesc desc;
+		GraphicsDevice* device = wiRenderer::GetDevice();
 
-		desc.vs = wiRenderer::GetVertexShader(VSTYPE_VERTEXCOLOR);
-		desc.ps = wiRenderer::GetPixelShader(PSTYPE_VERTEXCOLOR);
-		desc.il = wiRenderer::GetInputLayout(ILTYPE_VERTEXCOLOR);
-		desc.dss = wiRenderer::GetDepthStencilState(DSSTYPE_XRAY);
-		desc.rs = wiRenderer::GetRasterizerState(RSTYPE_DOUBLESIDED);
-		desc.bs = wiRenderer::GetBlendState(BSTYPE_ADDITIVE);
-		desc.pt = TRIANGLELIST;
+		{
+			PipelineStateDesc desc;
 
-		device->CreatePipelineState(&desc, &pso_solidpart);
-	}
+			desc.vs = wiRenderer::GetShader(VSTYPE_VERTEXCOLOR);
+			desc.ps = wiRenderer::GetShader(PSTYPE_VERTEXCOLOR);
+			desc.il = wiRenderer::GetInputLayout(ILTYPE_VERTEXCOLOR);
+			desc.dss = wiRenderer::GetDepthStencilState(DSSTYPE_XRAY);
+			desc.rs = wiRenderer::GetRasterizerState(RSTYPE_DOUBLESIDED);
+			desc.bs = wiRenderer::GetBlendState(BSTYPE_ADDITIVE);
+			desc.pt = TRIANGLELIST;
 
-	{
-		PipelineStateDesc desc;
+			device->CreatePipelineState(&desc, &pso_solidpart);
+		}
 
-		desc.vs = wiRenderer::GetVertexShader(VSTYPE_VERTEXCOLOR);
-		desc.ps = wiRenderer::GetPixelShader(PSTYPE_VERTEXCOLOR);
-		desc.il = wiRenderer::GetInputLayout(ILTYPE_VERTEXCOLOR);
-		desc.dss = wiRenderer::GetDepthStencilState(DSSTYPE_XRAY);
-		desc.rs = wiRenderer::GetRasterizerState(RSTYPE_WIRE_DOUBLESIDED_SMOOTH);
-		desc.bs = wiRenderer::GetBlendState(BSTYPE_TRANSPARENT);
-		desc.pt = LINELIST;
+		{
+			PipelineStateDesc desc;
 
-		device->CreatePipelineState(&desc, &pso_wirepart);
+			desc.vs = wiRenderer::GetShader(VSTYPE_VERTEXCOLOR);
+			desc.ps = wiRenderer::GetShader(PSTYPE_VERTEXCOLOR);
+			desc.il = wiRenderer::GetInputLayout(ILTYPE_VERTEXCOLOR);
+			desc.dss = wiRenderer::GetDepthStencilState(DSSTYPE_XRAY);
+			desc.rs = wiRenderer::GetRasterizerState(RSTYPE_WIRE_DOUBLESIDED_SMOOTH);
+			desc.bs = wiRenderer::GetBlendState(BSTYPE_TRANSPARENT);
+			desc.pt = LINELIST;
+
+			device->CreatePipelineState(&desc, &pso_wirepart);
+		}
 	}
 }
 
-Translator::Translator()
+void Translator::Create()
 {
 	GraphicsDevice* device = wiRenderer::GetDevice();
 
@@ -172,7 +176,7 @@ void Translator::Update()
 	dragEnded = false;
 
 	XMFLOAT4 pointer = wiInput::GetPointer();
-	const CameraComponent& cam = wiRenderer::GetCamera();
+	const CameraComponent& cam = wiScene::GetCamera();
 	XMVECTOR pos = transform.GetPositionV();
 
 	if (enabled)
@@ -429,7 +433,8 @@ void Translator::Draw(const CameraComponent& camera, CommandList cmd) const
 	if (!shaders_loaded)
 	{
 		shaders_loaded = true;
-		LoadShaders();
+		static wiEvent::Handle handle = wiEvent::Subscribe(SYSTEM_EVENT_RELOAD_SHADERS, [](uint64_t userdata) { Translator_Internal::LoadShaders(); });
+		Translator_Internal::LoadShaders();
 	}
 
 	Scene& scene = wiScene::GetScene();
@@ -453,7 +458,7 @@ void Translator::Draw(const CameraComponent& camera, CommandList cmd) const
 		const GPUBuffer* vbs[] = {
 			&vertexBuffer_Plane,
 		};
-		const UINT strides[] = {
+		const uint32_t strides[] = {
 			sizeof(XMFLOAT4) + sizeof(XMFLOAT4),
 		};
 		device->BindVertexBuffers(vbs, 0, arraysize(vbs), strides, nullptr, cmd);
@@ -489,7 +494,7 @@ void Translator::Draw(const CameraComponent& camera, CommandList cmd) const
 		const GPUBuffer* vbs[] = {
 			&vertexBuffer_Axis,
 		};
-		const UINT strides[] = {
+		const uint32_t strides[] = {
 			sizeof(XMFLOAT4) + sizeof(XMFLOAT4),
 		};
 		device->BindVertexBuffers(vbs, 0, arraysize(vbs), strides, nullptr, cmd);
@@ -525,7 +530,7 @@ void Translator::Draw(const CameraComponent& camera, CommandList cmd) const
 		const GPUBuffer* vbs[] = {
 			&vertexBuffer_Origin,
 		};
-		const UINT strides[] = {
+		const uint32_t strides[] = {
 			sizeof(XMFLOAT4) + sizeof(XMFLOAT4),
 		};
 		device->BindVertexBuffers(vbs, 0, arraysize(vbs), strides, nullptr, cmd);
@@ -593,6 +598,8 @@ void Translator::PostTranslate()
 		TransformComponent* transform_selected = scene.transforms.GetComponent(x.entity);
 		if (transform_selected != nullptr)
 		{
+			XMFLOAT4X4 worldPrev = transform_selected->world;
+
 			transform_selected->UpdateTransform_Parented(transform);
 
 			// selected to world space:
@@ -607,6 +614,13 @@ void Translator::PostTranslate()
 				{
 					transform_selected->MatrixTransform(XMMatrixInverse(nullptr, XMLoadFloat4x4(&transform_parent->world)));
 				}
+			}
+
+			// Restore worldPrev, so velocity buffer is correctly updated:
+			//	(Only when dragging, otherwise if it's released, we want to record the matrix properly for undo)
+			if (dragging)
+			{
+				transform_selected->world = worldPrev;
 			}
 		}
 	}

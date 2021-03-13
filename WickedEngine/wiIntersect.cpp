@@ -12,7 +12,8 @@ AABB AABB::transform(const XMMATRIX& mat) const
 	XMFLOAT3 corners[8];
 	for (int i = 0; i < 8; ++i)
 	{
-		XMVECTOR point = XMVector3Transform(XMLoadFloat3(&corner(i)), mat);
+		XMFLOAT3 C = corner(i);
+		XMVECTOR point = XMVector3Transform(XMLoadFloat3(&C), mat);
 		XMStoreFloat3(&corners[i], point);
 	}
 	XMFLOAT3 min = corners[0];
@@ -38,13 +39,12 @@ AABB AABB::transform(const XMFLOAT4X4& mat) const
 }
 XMFLOAT3 AABB::getCenter() const 
 {
-	XMFLOAT3 min = getMin(), max = getMax();
-	return XMFLOAT3((min.x + max.x)*0.5f, (min.y + max.y)*0.5f, (min.z + max.z)*0.5f);
+	return XMFLOAT3((_min.x + _max.x)*0.5f, (_min.y + _max.y)*0.5f, (_min.z + _max.z)*0.5f);
 }
 XMFLOAT3 AABB::getHalfWidth() const 
 {
-	XMFLOAT3 max = getMax(), center = getCenter();
-	return XMFLOAT3(abs(max.x - center.x), abs(max.y - center.y), abs(max.z - center.z));
+	XMFLOAT3 center = getCenter();
+	return XMFLOAT3(abs(_max.x - center.x), abs(_max.y - center.y), abs(_max.z - center.z));
 }
 XMMATRIX AABB::AABB::getAsBoxMatrix() const
 {
@@ -62,7 +62,7 @@ float AABB::getArea() const
 	return (_max.x - _min.x)*(_max.y - _min.y)*(_max.z - _min.z);
 }
 float AABB::getRadius() const {
-	XMFLOAT3& abc = getHalfWidth();
+	XMFLOAT3 abc = getHalfWidth();
 	return std::max(std::max(abc.x, abc.y), abc.z);
 }
 AABB::INTERSECTION_TYPE AABB::intersects(const AABB& b) const {
@@ -146,6 +146,12 @@ bool AABB::intersects(const SPHERE& sphere) const
 {
 	return sphere.intersects(*this);
 }
+bool AABB::intersects(const BoundingFrustum& frustum) const
+{
+	BoundingBox bb = BoundingBox(getCenter(), getHalfWidth());
+	bool intersection = frustum.Intersects(bb);
+	return intersection;
+}
 AABB AABB::operator* (float a)
 {
 	XMFLOAT3 min = getMin();
@@ -162,7 +168,7 @@ AABB AABB::Merge(const AABB& a, const AABB& b)
 {
 	return AABB(wiMath::Min(a.getMin(), b.getMin()), wiMath::Max(a.getMax(), b.getMax()));
 }
-void AABB::Serialize(wiArchive& archive, wiECS::Entity seed)
+void AABB::Serialize(wiArchive& archive, wiECS::EntitySerializer& seri)
 {
 	if (archive.IsReadMode())
 	{
@@ -337,7 +343,8 @@ Frustum::BoxFrustumIntersect Frustum::CheckBox(const AABB& box) const
 
 		for (int i = 0; i < 8; ++i)
 		{
-			if (XMVectorGetX(XMPlaneDotCoord(XMLoadFloat4(&planes[p]), XMLoadFloat3(&box.corner(i)))) < 0.0f)
+			XMFLOAT3 C = box.corner(i);
+			if (XMVectorGetX(XMPlaneDotCoord(XMLoadFloat4(&planes[p]), XMLoadFloat3(&C))) < 0.0f)
 			{
 				iPtIn = 0;
 				--iInCount;
@@ -351,6 +358,22 @@ Frustum::BoxFrustumIntersect Frustum::CheckBox(const AABB& box) const
 		return(BOX_FRUSTUM_INSIDE);
 	return(BOX_FRUSTUM_INTERSECTS);
 }
+bool Frustum::CheckBoxFast(const AABB& box) const
+{
+	XMVECTOR max = XMLoadFloat3(&box._max);
+	XMVECTOR min = XMLoadFloat3(&box._min);
+	XMVECTOR zero = XMVectorZero();
+	for (size_t p = 0; p < 6; ++p)
+	{
+		auto lt = XMVectorLess(XMLoadFloat4(&planes[p]), zero);
+		auto furthestFromPlane = XMVectorSelect(max, min, lt);
+		if (XMVectorGetX(XMPlaneDotCoord(XMLoadFloat4(&planes[p]), furthestFromPlane)) < 0.0f)
+		{
+			return false;
+		}
+	}
+	return true;
+}
 
 const XMFLOAT4& Frustum::getNearPlane() const { return planes[0]; }
 const XMFLOAT4& Frustum::getFarPlane() const { return planes[1]; }
@@ -361,7 +384,7 @@ const XMFLOAT4& Frustum::getBottomPlane() const { return planes[5]; }
 
 
 
-bool Hitbox2D::intersects(const Hitbox2D& b)
+bool Hitbox2D::intersects(const Hitbox2D& b) const
 {
 	return wiMath::Collision2D(pos, siz, b.pos, b.siz);
 }

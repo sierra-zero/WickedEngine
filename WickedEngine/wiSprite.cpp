@@ -17,32 +17,27 @@ wiSprite::wiSprite(const std::string& newTexture, const std::string& newMask)
 	{
 		maskName = newMask;
 		maskResource = wiResourceManager::Load(newMask);
-		params.setMaskMap(maskResource->texture);
+		params.setMaskMap(&maskResource->texture);
 	}
 }
 
 void wiSprite::Draw(CommandList cmd) const
 {
-	wiImage::Draw(textureResource != nullptr ? textureResource->texture : wiTextureHelper::getWhite(), params, cmd);
-}
-void wiSprite::DrawNormal(CommandList cmd) const
-{
-	if (params.opacity > 0 && ((params.blendFlag == BLENDMODE_ADDITIVE && params.fade < 1) || params.blendFlag != BLENDMODE_ADDITIVE))
-	{
-		wiImageParams effectsMod(params);
-		effectsMod.blendFlag = BLENDMODE_ADDITIVE;
-		effectsMod.enableExtractNormalMap();
-		wiImage::Draw(textureResource != nullptr ? textureResource->texture : wiTextureHelper::getWhite(), effectsMod, cmd);
-	}
+	if (IsHidden())
+		return;
+	wiImage::Draw(textureResource != nullptr ? &textureResource->texture : wiTextureHelper::getWhite(), params, cmd);
 }
 
 void wiSprite::FixedUpdate()
 {
-
+	if (IsDisableUpdate())
+		return;
 }
 
 void wiSprite::Update(float dt)
 {
+	if (IsDisableUpdate())
+		return;
 	params.pos.x += anim.vel.x*dt;
 	params.pos.y += anim.vel.y*dt;
 	params.pos.z += anim.vel.z*dt;

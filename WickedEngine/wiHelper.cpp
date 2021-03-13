@@ -2,32 +2,42 @@
 #include "wiPlatform.h"
 #include "wiRenderer.h"
 #include "wiBackLog.h"
+#include "wiEvent.h"
 
 #include "Utility/stb_image_write.h"
 
 #include <thread>
 #include <locale>
-#include <direct.h>
 #include <chrono>
 #include <iomanip>
 #include <fstream>
 #include <sstream>
 #include <codecvt> // string conversion
+#include <filesystem>
 
 #ifdef _WIN32
+#include <direct.h>
 #ifdef PLATFORM_UWP
-#include <collection.h>
-#include <ppltasks.h>
+#include <winrt/Windows.UI.Popups.h>
+#include <winrt/Windows.Storage.h>
+#include <winrt/Windows.Storage.Pickers.h>
+#include <winrt/Windows.Storage.AccessCache.h>
+#include <winrt/Windows.Storage.Streams.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #else
 #include <Commdlg.h> // openfile
 #include <WinBase.h>
 #endif // PLATFORM_UWP
+#else
+#include "Utility/portable-file-dialogs.h"
 #endif // _WIN32
 
 using namespace std;
 
 namespace wiHelper
 {
+
 	string toUpper(const std::string& s)
 	{
 		std::string result;
@@ -41,41 +51,69 @@ namespace wiHelper
 
 	void messageBox(const std::string& msg, const std::string& caption)
 	{
-		auto& state = wiPlatform::GetWindowState();
-		state.messagemutex.lock();
-		state.messages.emplace_back();
-		StringConvert(msg, state.messages.back().message);
-		StringConvert(caption, state.messages.back().caption);
-		state.messagemutex.unlock();
+#ifdef _WIN32
+#ifndef PLATFORM_UWP
+		MessageBoxA(GetActiveWindow(), msg.c_str(), caption.c_str(), 0);
+#else
+		wstring wmessage, wcaption;
+		StringConvert(msg, wmessage);
+		StringConvert(caption, wcaption);
+		// UWP can only show message box on main thread:
+		wiEvent::Subscribe_Once(SYSTEM_EVENT_THREAD_SAFE_POINT, [=](uint64_t userdata) {
+			winrt::Windows::UI::Popups::MessageDialog(wmessage, wcaption).ShowAsync();
+		});
+#endif // PLATFORM_UWP
+#elif SDL2
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, caption.c_str(), msg.c_str(), NULL);
+#endif // _WIN32
 	}
 
 	void screenshot(const std::string& name)
 	{
-		CreateDirectoryA("screenshots", 0);
-		stringstream ss("");
-		if (name.length() <= 0)
-			ss << GetOriginalWorkingDirectory() << "screenshots/sc_" << getCurrentDateTimeAsString() << ".jpg";
+		std::string directory;
+		if (name.empty())
+		{
+			directory = "screenshots";
+		}
 		else
-			ss << name;
+		{
+			directory = GetDirectoryFromPath(name);
+		}
 
-		bool result = saveTextureToFile(wiRenderer::GetDevice()->GetBackBuffer(), ss.str());
+		if (!std::filesystem::create_directory(directory.c_str()))
+		{
+			wiBackLog::post(("Directory couoldn't be created: " + directory).c_str());
+		}
+
+		std::string filename = name;
+		if (filename.empty())
+		{
+			filename = directory + "/sc_" + getCurrentDateTimeAsString() + ".jpg";
+		}
+
+		bool result = saveTextureToFile(wiRenderer::GetDevice()->GetBackBuffer(), filename);
 		assert(result);
+
+		if (result)
+		{
+			std::string msg = "Screenshot saved: " + filename;
+			wiBackLog::post(msg.c_str());
+		}
 	}
 
-	bool saveTextureToMemory(const wiGraphics::Texture& texture, std::vector<uint8_t>& data)
+	bool saveTextureToMemory(const wiGraphics::Texture& texture, std::vector<uint8_t>& texturedata)
 	{
 		using namespace wiGraphics;
 
 		GraphicsDevice* device = wiRenderer::GetDevice();
-
-		device->WaitForGPU();
 
 		TextureDesc desc = texture.GetDesc();
 		uint32_t data_count = desc.Width * desc.Height;
 		uint32_t data_stride = device->GetFormatStride(desc.Format);
 		uint32_t data_size = data_count * data_stride;
 
-		data.resize(data_size);
+		texturedata.clear();
+		texturedata.resize(data_size);
 
 		Texture stagingTex;
 		TextureDesc staging_desc = desc;
@@ -83,38 +121,85 @@ namespace wiHelper
 		staging_desc.CPUAccessFlags = CPU_ACCESS_READ;
 		staging_desc.BindFlags = 0;
 		staging_desc.MiscFlags = 0;
-		HRESULT hr = device->CreateTexture(&staging_desc, nullptr, &stagingTex);
-		assert(SUCCEEDED(hr));
+		staging_desc.MipLevels = 1;
+		bool success = device->CreateTexture(&staging_desc, nullptr, &stagingTex);
+		assert(success);
 
-		bool download_success = device->DownloadResource(&texture, &stagingTex, data.data());
-		assert(download_success);
+		CommandList cmd = device->BeginCommandList();
 
-		return download_success;
+		{
+			GPUBarrier barriers[] = {
+				GPUBarrier::Image(&texture, texture.desc.layout, IMAGE_LAYOUT_COPY_SRC, 0)
+			};
+			device->Barrier(barriers, arraysize(barriers), cmd);
+		}
+
+		device->CopyResource(&stagingTex, &texture, cmd);
+
+		{
+			GPUBarrier barriers[] = {
+				GPUBarrier::Image(&texture, IMAGE_LAYOUT_COPY_SRC, texture.desc.layout, 0)
+			};
+			device->Barrier(barriers, arraysize(barriers), cmd);
+		}
+
+		device->SubmitCommandLists();
+		device->WaitForGPU();
+
+		Mapping mapping;
+		mapping._flags = Mapping::FLAG_READ;
+		mapping.size = data_size;
+		device->Map(&stagingTex, &mapping);
+		if (mapping.data != nullptr)
+		{
+			if (mapping.rowpitch / data_stride != desc.Width)
+			{
+				// Copy padded texture row by row:
+				const uint32_t cpysize = desc.Width * data_stride;
+				for (uint32_t i = 0; i < desc.Height; ++i)
+				{
+					void* src = (void*)((size_t)mapping.data + size_t(i * mapping.rowpitch));
+					void* dst = (void*)((size_t)texturedata.data() + size_t(i * cpysize));
+					memcpy(dst, src, cpysize);
+				}
+			}
+			else
+			{
+				// Copy whole
+				std::memcpy(texturedata.data(), mapping.data, texturedata.size());
+			}
+			device->Unmap(&stagingTex);
+		}
+		else
+		{
+			assert(0);
+		}
+
+		return mapping.data != nullptr;
 	}
 
-	bool saveTextureToFile(const wiGraphics::Texture& texture, const string& fileName)
+	bool saveTextureToMemoryFile(const wiGraphics::Texture& texture, const std::string& fileExtension, std::vector<uint8_t>& filedata)
 	{
 		using namespace wiGraphics;
 		TextureDesc desc = texture.GetDesc();
-		std::vector<uint8_t> data;
-		if (saveTextureToMemory(texture, data))
+		std::vector<uint8_t> texturedata;
+		if (saveTextureToMemory(texture, texturedata))
 		{
-			return saveTextureToFile(data, desc, fileName);
+			return saveTextureToMemoryFile(texturedata, desc, fileExtension, filedata);
 		}
 		return false;
 	}
 
-	bool saveTextureToFile(const std::vector<uint8_t>& textureData, const wiGraphics::TextureDesc& desc, const std::string& fileName)
+	bool saveTextureToMemoryFile(const std::vector<uint8_t>& texturedata, const wiGraphics::TextureDesc& desc, const std::string& fileExtension, std::vector<uint8_t>& filedata)
 	{
 		using namespace wiGraphics;
-
 		uint32_t data_count = desc.Width * desc.Height;
 
 		if (desc.Format == FORMAT_R10G10B10A2_UNORM)
 		{
 			// So this should be converted first to rgba8 before saving to common format...
 
-			uint32_t* data32 = (uint32_t*)textureData.data();
+			uint32_t* data32 = (uint32_t*)texturedata.data();
 
 			for (uint32_t i = 0; i < data_count; ++i)
 			{
@@ -140,7 +225,7 @@ namespace wiHelper
 
 		int write_result = 0;
 
-		std::vector<uint8_t> filedata;
+		filedata.clear();
 		stbi_write_func* func = [](void* context, void* data, int size) {
 			std::vector<uint8_t>& filedata = *(std::vector<uint8_t>*)context;
 			for (int i = 0; i < size; ++i)
@@ -149,29 +234,50 @@ namespace wiHelper
 			}
 		};
 
-		string extension = wiHelper::toUpper(wiHelper::GetExtensionFromFileName(fileName));
-		if (!extension.compare("JPG"))
+		string extension = wiHelper::toUpper(fileExtension);
+		if (!extension.compare("JPG") || !extension.compare("JPEG"))
 		{
-			write_result = stbi_write_jpg_to_func(func, &filedata, (int)desc.Width, (int)desc.Height, 4, textureData.data(), 100);
+			write_result = stbi_write_jpg_to_func(func, &filedata, (int)desc.Width, (int)desc.Height, 4, texturedata.data(), 100);
 		}
 		else if (!extension.compare("PNG"))
 		{
-			write_result = stbi_write_png_to_func(func, &filedata, (int)desc.Width, (int)desc.Height, 4, textureData.data(), 0);
+			write_result = stbi_write_png_to_func(func, &filedata, (int)desc.Width, (int)desc.Height, 4, texturedata.data(), 0);
 		}
 		else if (!extension.compare("TGA"))
 		{
-			write_result = stbi_write_tga_to_func(func, &filedata, (int)desc.Width, (int)desc.Height, 4, textureData.data());
+			write_result = stbi_write_tga_to_func(func, &filedata, (int)desc.Width, (int)desc.Height, 4, texturedata.data());
 		}
 		else if (!extension.compare("BMP"))
 		{
-			write_result = stbi_write_bmp_to_func(func, &filedata, (int)desc.Width, (int)desc.Height, 4, textureData.data());
+			write_result = stbi_write_bmp_to_func(func, &filedata, (int)desc.Width, (int)desc.Height, 4, texturedata.data());
 		}
 		else
 		{
 			assert(0 && "Unsupported extension");
 		}
 
-		if (write_result != 0)
+		return write_result != 0;
+	}
+
+	bool saveTextureToFile(const wiGraphics::Texture& texture, const string& fileName)
+	{
+		using namespace wiGraphics;
+		TextureDesc desc = texture.GetDesc();
+		std::vector<uint8_t> data;
+		if (saveTextureToMemory(texture, data))
+		{
+			return saveTextureToFile(data, desc, fileName);
+		}
+		return false;
+	}
+
+	bool saveTextureToFile(const std::vector<uint8_t>& texturedata, const wiGraphics::TextureDesc& desc, const std::string& fileName)
+	{
+		using namespace wiGraphics;
+
+		string ext = GetExtensionFromFileName(fileName);
+		std::vector<uint8_t> filedata;
+		if (saveTextureToMemoryFile(texturedata, desc, ext, filedata))
 		{
 			return FileWrite(fileName, filedata.data(), filedata.size());
 		}
@@ -183,98 +289,14 @@ namespace wiHelper
 	{
 		time_t t = std::time(nullptr);
 		struct tm time_info;
+#ifdef _WIN32
 		localtime_s(&time_info, &t);
+#else
+		localtime(&t);
+#endif
 		stringstream ss("");
 		ss << std::put_time(&time_info, "%d-%m-%Y %H-%M-%S");
 		return ss.str();
-	}
-
-	string GetApplicationDirectory()
-	{
-		static string appDir;
-		static bool initComplete = false;
-		if (!initComplete)
-		{
-			CHAR fileName[1024] = {};
-			GetModuleFileNameA(NULL, fileName, arraysize(fileName));
-			appDir = GetDirectoryFromPath(fileName);
-			initComplete = true;
-		}
-		return appDir;
-	}
-
-	std::string workingdir = std::string(_getcwd(NULL, 0)) + "/";
-	const std::string __originalWorkingDir = workingdir;
-	string GetOriginalWorkingDirectory()
-	{
-		return __originalWorkingDir;
-	}
-
-	string GetWorkingDirectory()
-	{
-		return workingdir;
-	}
-
-	void SetWorkingDirectory(const std::string& path)
-	{
-		workingdir = path;
-	}
-
-	void GetFilesInDirectory(std::vector<string>& out, const std::string& directory)
-	{
-#ifndef PLATFORM_UWP
-		// WINDOWS
-		wstring wdirectory;
-		StringConvert(directory, wdirectory);
-		HANDLE dir;
-		WIN32_FIND_DATA file_data;
-
-		if ((dir = FindFirstFile((wdirectory + L"/*").c_str(), &file_data)) == INVALID_HANDLE_VALUE)
-			return; /* No files found */
-
-		do {
-			const wstring file_name = file_data.cFileName;
-			const wstring full_file_name = wdirectory + L"/" + file_name;
-			const bool is_directory = (file_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-
-			//if (file_name[0] == '.')
-			//	continue;
-
-			//if (is_directory)
-			//	continue;
-
-			string fname;
-			StringConvert(full_file_name, fname);
-			out.push_back(fname);
-		} while (FindNextFile(dir, &file_data));
-
-		FindClose(dir);
-#endif
-
-		// UNIX
-		//DIR *dir;
-		//class dirent *ent;
-		//class stat st;
-
-		//dir = opendir(directory);
-		//while ((ent = readdir(dir)) != NULL) {
-		//	const string file_name = ent->d_name;
-		//	const string full_file_name = directory + "/" + file_name;
-
-		//	if (file_name[0] == '.')
-		//		continue;
-
-		//	if (stat(full_file_name.c_str(), &st) == -1)
-		//		continue;
-
-		//	const bool is_directory = (st.st_mode & S_IFDIR) != 0;
-
-		//	if (is_directory)
-		//		continue;
-
-		//	out.push_back(full_file_name);
-		//}
-		//closedir(dir);
 	}
 
 	void SplitPath(const std::string& fullPath, string& dir, string& fileName)
@@ -318,53 +340,43 @@ namespace wiHelper
 			std::string extension = filename.substr(idx + 1);
 			return extension;
 		}
-		
+
 		// No extension found
 		return "";
 	}
 
-	void RemoveExtensionFromFileName(std::string& filename)
+	void MakePathRelative(const std::string& rootdir, std::string& path)
 	{
-		string extension = GetExtensionFromFileName(filename);
-
-		if (!extension.empty())
+		if (rootdir.empty() || path.empty())
 		{
-			filename = filename.substr(0, filename.length() - extension.length() - 1);
-		}
-	}
-
-	std::string ExpandPath(const std::string& path)
-	{
-		std::string expanded = path;
-
-		// First make the path absolute if it's not (if it doesn't start with a drive letter):
-		if (expanded.find(":\\") == string::npos)
-		{
-			expanded = GetWorkingDirectory() + expanded;
+			return;
 		}
 
-		// Replace all slashes with backslashes:
-#ifdef PLATFORM_UWP
-		std::replace(expanded.begin(), expanded.end(), '/', '\\');
-#endif // _WIN32
-
-		size_t pos;
-		while ((pos = expanded.find("..")) != string::npos)
+		std::filesystem::path filepath = path;
+		std::filesystem::path rootpath = rootdir;
+		std::filesystem::path relative = std::filesystem::relative(path, rootdir);
+		if (!relative.empty())
 		{
-			std::string parent = expanded.substr(0, pos - 1);
-			size_t pos2 = parent.find_last_of("\\");
-			parent = parent.substr(0, pos2);
-			std::string child = expanded.substr(pos + 2);
-			expanded = parent + child;
+			path = relative.string();
 		}
 
-		return expanded;
+		//size_t found = path.rfind(rootdir);
+		//if (found != std::string::npos)
+		//{
+		//	path = path.substr(found + rootdir.length());
+		//}
 	}
 
 	bool FileRead(const std::string& fileName, std::vector<uint8_t>& data)
 	{
 #ifndef PLATFORM_UWP
+#ifdef SDL_FILESYSTEM_UNIX
+		std::string filepath = fileName;
+		std::replace(filepath.begin(), filepath.end(), '\\', '/');
+		ifstream file(filepath, ios::binary | ios::ate);
+#else
 		ifstream file(fileName, ios::binary | ios::ate);
+#endif // SDL_FILESYSTEM_UNIX
 		if (file.is_open())
 		{
 			size_t dataSize = (size_t)file.tellg();
@@ -375,61 +387,57 @@ namespace wiHelper
 			return true;
 		}
 #else
-		using namespace concurrency;
-		using namespace Platform;
-		using namespace Windows::Storage;
-		using namespace Windows::Storage::Streams;
+		using namespace winrt::Windows::Storage;
+		using namespace winrt::Windows::Storage::Streams;
+		using namespace winrt::Windows::Foundation;
 		wstring wstr;
-		string filepath = ExpandPath(fileName);
-		StringConvert(filepath, wstr);
+		std::filesystem::path filepath = fileName;
+		filepath = std::filesystem::absolute(filepath);
+		StringConvert(filepath.string(), wstr);
 		bool success = false;
-		std::thread([&] {
-			bool end0 = false;
-			create_task(StorageFile::GetFileFromPathAsync(ref new String(wstr.c_str()))).then([&](task<StorageFile^> task) {
-				
-				StorageFile^ file;
-				try
-				{
-					file = task.get();
-				}
-				catch (Platform::AccessDeniedException^ e)
-				{
-					wiBackLog::post(("Opening file failed: " + fileName + "\nReason: Permission Denied!").c_str());
-					end0 = true;
-					return;
-				}
-				catch (...)
-				{
-					end0 = true;
-					return;
-				}
 
-				if (file)
+		auto async_helper = [&]() -> IAsyncAction {
+			try
+			{
+				auto file = co_await StorageFile::GetFileFromPathAsync(wstr);
+				auto buffer = co_await FileIO::ReadBufferAsync(file);
+				auto reader = DataReader::FromBuffer(buffer);
+				auto size = buffer.Length();
+				data.resize((size_t)size);
+				for (auto& x : data)
 				{
-					bool end1 = false;
-					create_task(FileIO::ReadBufferAsync(file)).then([&](IBuffer^ buffer) {
-						auto reader = DataReader::FromBuffer(buffer);
-						auto size = buffer->Length;
-						data.resize((size_t)size);
-						for (auto& x : data)
-						{
-							x = reader->ReadByte();
-						}
-						success = true;
-						end1 = true;
-						});
-					while (!end1) { Sleep(1); }
+					x = reader.ReadByte();
 				}
-				end0 = true;
-				});
-			while (!end0) { Sleep(1); }
+				success = true;
+			}
+			catch (winrt::hresult_error const& ex)
+			{
+				switch (ex.code())
+				{
+				case E_ACCESSDENIED:
+					wiBackLog::post(("Opening file failed: " + fileName + " | Reason: Permission Denied!").c_str());
+					break;
+				default:
+					break;
+				}
+			}
 
-		}).join();
+		};
+
+		if (winrt::impl::is_sta_thread())
+		{
+			std::thread([&] { async_helper().get(); }).join(); // can't block coroutine from ui thread
+		}
+		else
+		{
+			async_helper().get();
+		}
 
 		if (success)
 		{
 			return true;
 		}
+
 #endif // PLATFORM_UWP
 
 		wiBackLog::post(("File not found: " + fileName).c_str());
@@ -452,39 +460,61 @@ namespace wiHelper
 			return true;
 		}
 #else
-		using namespace concurrency;
-		using namespace Platform;
-		using namespace Windows::Storage;
-		using namespace Windows::Storage::Streams;
-		using namespace Windows::Security::Cryptography;
-		wstring wstr;
-		string filepath = ExpandPath(fileName);
-		StringConvert(filepath, wstr);
-		bool success = false;
-		std::thread([&] {
-			bool end0 = false;
-			create_task(StorageFile::GetFileFromPathAsync(ref new String(wstr.c_str()))).then([&](StorageFile^ file) {
-				if (file)
-				{
-					bool end1 = false;
-					create_task(FileIO::WriteBytesAsync(file, ref new Platform::Array<unsigned char>((unsigned char*)data, (unsigned int)size))).then([&]() {
-						success = true;
-						end1 = true;
-						});
-					while (!end1) { Sleep(1); }
-				}
-				end0 = true;
-				});
-			while (!end0) { Sleep(1); }
-			}).join();
 
-			if (success)
+		using namespace winrt::Windows::Storage;
+		using namespace winrt::Windows::Storage::Streams;
+		using namespace winrt::Windows::Foundation;
+		wstring wstr;
+		std::filesystem::path filepath = fileName;
+		filepath = std::filesystem::absolute(filepath);
+		StringConvert(filepath.string(), wstr);
+
+		CREATEFILE2_EXTENDED_PARAMETERS params = {};
+		params.dwSize = (DWORD)size;
+		params.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
+		HANDLE filehandle = CreateFile2FromAppW(wstr.c_str(), GENERIC_READ | GENERIC_WRITE, 0, CREATE_ALWAYS, &params);
+		assert(filehandle);
+		CloseHandle(filehandle);
+
+		bool success = false;
+		auto async_helper = [&]() -> IAsyncAction {
+			try
 			{
-				return true;
+				auto file = co_await StorageFile::GetFileFromPathAsync(wstr);
+				winrt::array_view<const uint8_t> dataarray(data, (winrt::array_view<const uint8_t>::size_type)size);
+				co_await FileIO::WriteBytesAsync(file, dataarray);
+				success = true;
 			}
+			catch (winrt::hresult_error const& ex)
+			{
+				switch (ex.code())
+				{
+				case E_ACCESSDENIED:
+					wiBackLog::post(("Opening file failed: " + fileName + " | Reason: Permission Denied!").c_str());
+					break;
+				default:
+					break;
+				}
+			}
+
+		};
+
+		if (winrt::impl::is_sta_thread())
+		{
+			std::thread([&] { async_helper().get(); }).join(); // can't block coroutine from ui thread
+		}
+		else
+		{
+			async_helper().get();
+		}
+
+		if (success)
+		{
+			return true;
+		}
 #endif // PLATFORM_UWP
 
-			return false;
+		return false;
 	}
 
 	bool FileExists(const std::string& fileName)
@@ -495,49 +525,47 @@ namespace wiHelper
 		file.close();
 		return exists;
 #else
-		using namespace concurrency;
-		using namespace Platform;
-		using namespace Windows::Storage;
-		using namespace Windows::Storage::Streams;
-		string filepath = ExpandPath(fileName);
-		string directory, name;
-		SplitPath(filepath, directory, name);
+		using namespace winrt::Windows::Storage;
+		using namespace winrt::Windows::Foundation;
+		string directory = GetDirectoryFromPath(fileName);
+		string name = GetFileNameFromPath(fileName);
 		wstring wdir, wname;
 		StringConvert(directory, wdir);
 		StringConvert(name, wname);
 		bool success = false;
-		std::thread([&] {
-			bool end0 = false;
-			create_task(StorageFolder::GetFolderFromPathAsync(ref new String(wdir.c_str()))).then([&](task<StorageFolder^> task) {
 
-				StorageFolder^ folder;
-				try
+		auto async_helper = [&]() -> IAsyncAction {
+			try
+			{
+				auto folder = co_await StorageFolder::GetFolderFromPathAsync(wdir);
+				auto item = co_await folder.TryGetItemAsync(wname);
+				if (item)
 				{
-					folder = task.get();
+					success = true;
 				}
-				catch (Platform::AccessDeniedException^ e)
+			}
+			catch (winrt::hresult_error const& ex)
+			{
+				switch (ex.code())
 				{
-					wiBackLog::post(("Opening file failed: " + fileName + "\nReason: Permission Denied!").c_str());
-					end0 = true;
-					return;
+				case E_ACCESSDENIED:
+					wiBackLog::post(("Opening file failed: " + fileName + " | Reason: Permission Denied!").c_str());
+					break;
+				default:
+					break;
 				}
+			}
 
-				if (folder)
-				{
-					bool end1 = false;
-					create_task(folder->TryGetItemAsync(ref new String(wname.c_str()))).then([&](IStorageItem^ item) {
-						if (item)
-						{
-							success = true;
-						}
-						end1 = true;
-					});
-					while (!end1) { Sleep(1); }
-				}
-				end0 = true;
-			});
-			while (!end0) { Sleep(1); }
-		}).join();
+		};
+
+		if (winrt::impl::is_sta_thread())
+		{
+			std::thread([&] { async_helper().get(); }).join(); // can't block coroutine from ui thread
+		}
+		else
+		{
+			async_helper().get();
+		}
 
 		return success;
 #endif
@@ -601,10 +629,12 @@ namespace wiHelper
 			{
 			case FileDialogParams::OPEN:
 				ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+				ofn.Flags |= OFN_NOCHANGEDIR;
 				ok = GetOpenFileNameA(&ofn) == TRUE;
 				break;
 			case FileDialogParams::SAVE:
 				ofn.Flags = OFN_OVERWRITEPROMPT;
+				ofn.Flags |= OFN_NOCHANGEDIR;
 				ok = GetSaveFileNameA(&ofn) == TRUE;
 				break;
 			}
@@ -617,165 +647,201 @@ namespace wiHelper
 			}).detach();
 
 #else
+		auto filedialoghelper = [](FileDialogParams params, std::function<void(std::string fileName)> onSuccess) -> winrt::fire_and_forget {
 
-		using namespace concurrency;
-		using namespace Platform;
-		using namespace Windows::Storage;
-		using namespace Windows::Storage::Pickers;
-		using namespace Windows::Storage::AccessCache;
+			using namespace winrt::Windows::Storage;
+			using namespace winrt::Windows::Storage::Pickers;
+			using namespace winrt::Windows::Storage::AccessCache;
 
-		switch (params.type)
-		{
-		case FileDialogParams::OPEN:
-		{
-			FileOpenPicker^ picker = ref new FileOpenPicker();
-			picker->ViewMode = PickerViewMode::List;
-			picker->SuggestedStartLocation = PickerLocationId::Objects3D;
-
-			for (auto& x : params.extensions)
+			switch (params.type)
 			{
-				wstring wstr;
-				StringConvert(x, wstr);
-				wstr = L"." + wstr;
-				picker->FileTypeFilter->Append(ref new String(wstr.c_str()));
-			}
+			default:
+			case FileDialogParams::OPEN:
+			{
+				FileOpenPicker picker;
+				picker.ViewMode(PickerViewMode::List);
+				picker.SuggestedStartLocation(PickerLocationId::Objects3D);
 
-			create_task(picker->PickSingleFileAsync()).then([=](StorageFile^ file) {
+				for (auto& x : params.extensions)
+				{
+					wstring wstr;
+					StringConvert(x, wstr);
+					wstr = L"." + wstr;
+					picker.FileTypeFilter().Append(wstr);
+				}
+
+				auto file = co_await picker.PickSingleFileAsync();
+
 				if (file)
 				{
-					auto futureaccess = StorageApplicationPermissions::FutureAccessList;
-					futureaccess->Clear();
-					futureaccess->Add(file);
-					wstring wstr = file->Path->Data();
+					auto futureaccess = StorageApplicationPermissions::FutureAccessList();
+					futureaccess.Clear();
+					futureaccess.Add(file);
+					wstring wstr = file.Path().data();
 					string str;
 					StringConvert(wstr, str);
 
-					// The desktop file picker also modifies the working directory:
-					SetWorkingDirectory(GetDirectoryFromPath(str));
-
-					// Need to verify that parent folder is accessible:
-					create_task(file->GetParentAsync()).then([=](StorageFolder^ folder) {
-						if (folder)
-						{
-							onSuccess(str);
-						}
-						else
-						{
-							// Folder not accessible:
-							using namespace Windows::UI::Popups;
-							auto msg = ref new MessageDialog(
-								ref new Platform::String(L"No permission to folder!\nPlease pick the current folder to receive permission!\nOtherwise, some files might fail to load."),
-								ref new Platform::String(L"Warning!")
-							);
-							create_task(msg->ShowAsync()).then([=](IUICommand^ cmd) {
-
-								FolderPicker^ folderpicker = ref new FolderPicker();
-								folderpicker->ViewMode = PickerViewMode::List;
-								folderpicker->SuggestedStartLocation = PickerLocationId::ComputerFolder;
-
-								for (auto& x : params.extensions)
-								{
-									wstring wstr;
-									StringConvert(x, wstr);
-									wstr = L"." + wstr;
-									folderpicker->FileTypeFilter->Append(ref new String(wstr.c_str()));
-								}
-
-								create_task(folderpicker->PickSingleFolderAsync()).then([=](StorageFolder^ folder) {
-									if (folder)
-									{
-										futureaccess->Add(folder);
-										onSuccess(str);
-									}
-								});
-							});
-						}
-					});
+					onSuccess(str);
 				}
-			});
-		}
-		break;
-
-		case FileDialogParams::SAVE:
-		{
-			FileSavePicker^ picker = ref new FileSavePicker();
-			picker->SuggestedStartLocation = PickerLocationId::Objects3D;
-
-			for (auto& x : params.extensions)
-			{
-				wstring wstr;
-				StringConvert(x, wstr);
-				wstr = L"." + wstr;
-				auto plainTextExtensions = ref new Platform::Collections::Vector<String^>();
-				plainTextExtensions->Append(ref new String(wstr.c_str()));
-				StringConvert(params.description, wstr);
-				picker->FileTypeChoices->Insert(ref new String(wstr.c_str()), plainTextExtensions);
 			}
+			break;
+			case FileDialogParams::SAVE:
+			{
+				FileSavePicker picker;
+				picker.SuggestedStartLocation(PickerLocationId::Objects3D);
 
-			create_task(picker->PickSaveFileAsync()).then([=](StorageFile^ file) {
+				wstring wdesc;
+				StringConvert(params.description, wdesc);
+				winrt::Windows::Foundation::Collections::IVector<winrt::hstring> extensions{ winrt::single_threaded_vector<winrt::hstring>() };
+				for (auto& x : params.extensions)
+				{
+					wstring wstr;
+					StringConvert(x, wstr);
+					wstr = L"." + wstr;
+					extensions.Append(wstr);
+				}
+				picker.FileTypeChoices().Insert(wdesc, extensions);
 
+				auto file = co_await picker.PickSaveFileAsync();
 				if (file)
 				{
-					auto futureaccess = StorageApplicationPermissions::FutureAccessList;
-					futureaccess->Clear();
-					futureaccess->Add(file);
-					wstring wstr = file->Path->Data();
+					auto futureaccess = StorageApplicationPermissions::FutureAccessList();
+					futureaccess.Clear();
+					futureaccess.Add(file);
+					wstring wstr = file.Path().data();
 					string str;
 					StringConvert(wstr, str);
 					onSuccess(str);
 				}
-			});
-		}
-		break;
-		}
+			}
+			break;
+			}
+		};
+		filedialoghelper(params, onSuccess);
 
 #endif // PLATFORM_UWP
+
+#else
+		if (!pfd::settings::available()) {
+			const char *message = "No dialog backend available";
+#ifdef SDL2
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+									 "File dialog error!",
+									 message,
+									 nullptr);
+#endif
+			std::cerr << message << std::endl;
+		}
+
+		std::vector<std::string> extensions = {params.description};
+		extensions.reserve(params.extensions.size()+1);
+		extensions.insert(extensions.end(), params.extensions.cbegin(), params.extensions.cend());
+
+		switch (params.type) {
+			case FileDialogParams::OPEN: {
+				std::vector<std::string> selection = pfd::open_file(
+						params.description,
+						std::filesystem::current_path().string(),
+						extensions
+						// allow multi selection here
+				).result();
+				// result() will wait for user action before returning.
+				// This operation will block and return the user choice
+
+				if (!selection.empty()) {
+					onSuccess(selection[0]);
+				}
+				//TODO what happens if the user cancelled the action? Is there not a onFailure callback?
+			}
+			case FileDialogParams::SAVE: {
+				std::string destination = pfd::save_file(params.description,
+						std::filesystem::current_path().string(),
+						extensions
+						// remove overwrite warning here
+				).result();
+				onSuccess(destination);
+			}
+		}
 #endif // _WIN32
+	}
+
+	bool Bin2H(const uint8_t* data, size_t size, const std::string& dst_filename, const char* dataName)
+	{
+		std::stringstream ss;
+		ss << "const uint8_t " << dataName << "[] = {";
+		for (size_t i = 0; i < size; ++i)
+		{
+			ss << (uint32_t)data[i] << ", ";
+		}
+		ss << "};" << endl;
+		return FileWrite(dst_filename, (uint8_t*)ss.str().c_str(), ss.str().length());
 	}
 
 	void StringConvert(const std::string& from, std::wstring& to)
 	{
+#ifdef _WIN32
 		int num = MultiByteToWideChar(CP_UTF8, 0, from.c_str(), -1, NULL, 0);
 		if (num > 0)
 		{
 			to.resize(size_t(num) - 1);
 			MultiByteToWideChar(CP_UTF8, 0, from.c_str(), -1, &to[0], num);
 		}
+#else
+		to = std::wstring(from.begin(), from.end()); // TODO
+#endif // _WIN32
 	}
 
 	void StringConvert(const std::wstring& from, std::string& to)
 	{
+#ifdef _WIN32
 		int num = WideCharToMultiByte(CP_UTF8, 0, from.c_str(), -1, NULL, 0, NULL, NULL);
 		if (num > 0)
 		{
 			to.resize(size_t(num) - 1);
 			WideCharToMultiByte(CP_UTF8, 0, from.c_str(), -1, &to[0], num, NULL, NULL);
 		}
+#else
+		to = std::string(from.begin(), from.end()); // TODO
+#endif // _WIN32
 	}
 
 	int StringConvert(const char* from, wchar_t* to)
 	{
+#ifdef _WIN32
 		int num = MultiByteToWideChar(CP_UTF8, 0, from, -1, NULL, 0);
 		if (num > 0)
 		{
 			MultiByteToWideChar(CP_UTF8, 0, from, -1, &to[0], num);
 		}
+#else
+		int num = 0; // TODO
+		const char * message = "int StringConvert(const char* from, wchar_t* to) not implemented";
+		std::cerr << message << std::endl;
+		throw std::runtime_error(message);
+#endif // _WIN32
 		return num;
 	}
 
 	int StringConvert(const wchar_t* from, char* to)
 	{
+#ifdef _WIN32
 		int num = WideCharToMultiByte(CP_UTF8, 0, from, -1, NULL, 0, NULL, NULL);
 		if (num > 0)
 		{
 			WideCharToMultiByte(CP_UTF8, 0, from, -1, &to[0], num, NULL, NULL);
 		}
+#else
+		int num = 0; // TODO
+		const char * message = "int StringConvert(const wchar_t* from, char* to) not implemented";
+		std::cerr << message << std::endl;
+		throw std::runtime_error(message);
+#endif // _WIN32
 		return num;
 	}
 	
 	void Sleep(float milliseconds)
 	{
-		::Sleep((DWORD)milliseconds);
+		std::this_thread::sleep_for(std::chrono::milliseconds((int)milliseconds));
 	}
 
 	void Spin(float milliseconds)

@@ -1,6 +1,7 @@
+#define OBJECTSHADER_LAYOUT_COMMON
 #include "objectHF.hlsli"
 
-float4 main(PixelInputType input) : SV_Target0
+float4 main(PixelInput input) : SV_Target0
 {
 	float4 color;
 	[branch]
@@ -15,7 +16,7 @@ float4 main(PixelInputType input) : SV_Target0
 		color = 1;
 	}
 	color *= input.color;
-	ALPHATEST(color.a);
+	clip(color.a - 0.5);
 	color.a = 1;
 
 	return color;

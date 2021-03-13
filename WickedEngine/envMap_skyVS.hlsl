@@ -1,12 +1,14 @@
-#include "envMapHF.hlsli"
+#define OBJECTSHADER_USE_NORMAL
+#define OBJECTSHADER_USE_RENDERTARGETARRAYINDEX
+#include "objectHF.hlsli"
 #include "icosphere.hlsli"
 
-PSIn_Sky_EnvmapRendering main(uint vid : SV_VERTEXID, uint instanceID : SV_INSTANCEID)
+PixelInput main(uint vid : SV_VERTEXID, uint instanceID : SV_INSTANCEID)
 {
-	PSIn_Sky_EnvmapRendering output;
+	PixelInput output;
 
 	output.RTIndex = instanceID;
-	output.pos = mul(xCubeShadowVP[output.RTIndex], float4(ICOSPHERE[vid].xyz,0));
+	output.pos = mul(xCubemapRenderCams[output.RTIndex].VP, float4(ICOSPHERE[vid].xyz,0));
 	output.nor = ICOSPHERE[vid].xyz;
 
 	return output;

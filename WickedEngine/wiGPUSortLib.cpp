@@ -2,6 +2,7 @@
 #include "wiRenderer.h"
 #include "wiResourceManager.h"
 #include "ShaderInterop_GPUSortLib.h"
+#include "wiEvent.h"
 
 using namespace wiGraphics;
 
@@ -13,6 +14,18 @@ namespace wiGPUSortLib
 	static Shader sortCS;
 	static Shader sortInnerCS;
 	static Shader sortStepCS;
+
+
+	void LoadShaders()
+	{
+		std::string path = wiRenderer::GetShaderPath();
+
+		wiRenderer::LoadShader(CS, kickoffSortCS, "gpusortlib_kickoffSortCS.cso");
+		wiRenderer::LoadShader(CS, sortCS, "gpusortlib_sortCS.cso");
+		wiRenderer::LoadShader(CS, sortInnerCS, "gpusortlib_sortInnerCS.cso");
+		wiRenderer::LoadShader(CS, sortStepCS, "gpusortlib_sortStepCS.cso");
+
+	}
 
 	void Initialize()
 	{
@@ -33,17 +46,8 @@ namespace wiGPUSortLib
 		bd.ByteWidth = sizeof(IndirectDispatchArgs);
 		wiRenderer::GetDevice()->CreateBuffer(&bd, nullptr, &indirectBuffer);
 
-	}
-
-	void LoadShaders()
-	{
-		std::string path = wiRenderer::GetShaderPath();
-
-		wiRenderer::LoadShader(CS, kickoffSortCS, "gpusortlib_kickoffSortCS.cso");
-		wiRenderer::LoadShader(CS, sortCS,  "gpusortlib_sortCS.cso");
-		wiRenderer::LoadShader(CS, sortInnerCS, "gpusortlib_sortInnerCS.cso");
-		wiRenderer::LoadShader(CS, sortStepCS, "gpusortlib_sortStepCS.cso");
-
+		static wiEvent::Handle handle = wiEvent::Subscribe(SYSTEM_EVENT_RELOAD_SHADERS, [](uint64_t userdata) { LoadShaders(); });
+		LoadShaders();
 	}
 
 
@@ -55,14 +59,6 @@ namespace wiGPUSortLib
 		const GPUBuffer& indexBuffer_write,
 		CommandList cmd)
 	{
-		static bool init = false;
-		if (!init)
-		{
-			Initialize();
-			init = true;
-		}
-
-
 		GraphicsDevice* device = wiRenderer::GetDevice();
 
 		device->EventBegin("GPUSortLib", cmd);
@@ -89,19 +85,24 @@ namespace wiGPUSortLib
 			};
 			device->BindUAVs(CS, uavs, 0, arraysize(uavs), cmd);
 
-			device->Dispatch(1, 1, 1, cmd);
-			device->Barrier(&GPUBarrier::Memory(), 1, cmd);
+			{
+				GPUBarrier barriers[] = {
+					GPUBarrier::Buffer(&indirectBuffer, BUFFER_STATE_INDIRECT_ARGUMENT, BUFFER_STATE_UNORDERED_ACCESS)
+				};
+				device->Barrier(barriers, arraysize(barriers), cmd);
+			}
 
-			device->UnbindUAVs(0, arraysize(uavs), cmd);
+			device->Dispatch(1, 1, 1, cmd);
 
 			{
-				GPUBarrier barrier;
-				barrier.type = GPUBarrier::BUFFER_BARRIER;
-				barrier.buffer.buffer = &indirectBuffer;
-				barrier.buffer.state_before = BUFFER_STATE_UNORDERED_ACCESS;
-				barrier.buffer.state_after = BUFFER_STATE_INDIRECT_ARGUMENT;
-				device->Barrier(&barrier, 1, cmd);
+				GPUBarrier barriers[] = {
+					GPUBarrier::Memory(),
+					GPUBarrier::Buffer(&indirectBuffer, BUFFER_STATE_UNORDERED_ACCESS, BUFFER_STATE_INDIRECT_ARGUMENT)
+				};
+				device->Barrier(barriers, arraysize(barriers), cmd);
 			}
+
+			device->UnbindUAVs(0, arraysize(uavs), cmd);
 		}
 
 
@@ -136,7 +137,11 @@ namespace wiGPUSortLib
 			// sort all buffers of size 512 (and presort bigger ones)
 			device->BindComputeShader(&sortCS, cmd);
 			device->DispatchIndirect(&indirectBuffer, 0, cmd);
-			device->Barrier(&GPUBarrier::Memory(), 1, cmd);
+
+			GPUBarrier barriers[] = {
+				GPUBarrier::Memory(),
+			};
+			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
 
 		int presorted = 512;
@@ -182,12 +187,20 @@ namespace wiGPUSortLib
 				device->BindConstantBuffer(CS, &sortCB, CB_GETBINDSLOT(SortConstants), cmd);
 
 				device->Dispatch(numThreadGroups, 1, 1, cmd);
-				device->Barrier(&GPUBarrier::Memory(), 1, cmd);
+
+				GPUBarrier barriers[] = {
+					GPUBarrier::Memory(),
+				};
+				device->Barrier(barriers, arraysize(barriers), cmd);
 			}
 
 			device->BindComputeShader(&sortInnerCS, cmd);
 			device->Dispatch(numThreadGroups, 1, 1, cmd);
-			device->Barrier(&GPUBarrier::Memory(), 1, cmd);
+
+			GPUBarrier barriers[] = {
+				GPUBarrier::Memory(),
+			};
+			device->Barrier(barriers, arraysize(barriers), cmd);
 
 			presorted *= 2;
 		}

@@ -1,5 +1,13 @@
 #include "globals.hlsli"
 
+TEXTURE2D(texture_0, float4, TEXSLOT_ONDEMAND0);
+TEXTURE2D(texture_1, float4, TEXSLOT_ONDEMAND1);
+TEXTURE2D(texture_2, float4, TEXSLOT_ONDEMAND2);
+TEXTURE2D(texture_3, float4, TEXSLOT_ONDEMAND3);
+TEXTURE2D(texture_4, float4, TEXSLOT_ONDEMAND4);
+TEXTURE2D(texture_5, float4, TEXSLOT_ONDEMAND5);
+TEXTURE2D(texture_6, float4, TEXSLOT_ONDEMAND6);
+
 struct InVert
 {
 	float4 pos					: SV_POSITION;
@@ -91,7 +99,7 @@ void main(point InVert p[1], inout TriangleStream<VertextoPixel> triStream)
 		for (float x = -range.x; x <= range.x; x += step.x)
 		{
 			samples += 1.0f;
-			accdepth += texture_depth.SampleLevel(sampler_point_clamp, xSunPos.xy + float2(x, y), 0).r < referenceDepth ? 1 : 0;
+			accdepth += texture_depth.SampleLevel(sampler_point_clamp, xSunPos.xy + float2(x, y), 0).r <= referenceDepth ? 1 : 0;
 		}
 	}
 	accdepth /= samples;

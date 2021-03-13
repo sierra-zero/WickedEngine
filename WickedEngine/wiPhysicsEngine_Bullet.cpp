@@ -3,6 +3,7 @@
 #include "wiProfiler.h"
 #include "wiBackLog.h"
 #include "wiJobSystem.h"
+#include "wiRenderer.h"
 
 #include "btBulletDynamicsCommon.h"
 #include "BulletSoftBody/btSoftBodyHelpers.h"
@@ -21,32 +22,53 @@ using namespace wiScene;
 namespace wiPhysicsEngine
 {
 	bool ENABLED = true;
+	bool SIMULATION_ENABLED = true;
+	bool DEBUGDRAW_ENABLED = false;
+	int ACCURACY = 10;
 	std::mutex physicsLock;
 
 	btVector3 gravity(0, -10, 0);
 	int softbodyIterationCount = 5;
-	std::unique_ptr<btCollisionConfiguration> collisionConfiguration;
+	btSoftBodyRigidBodyCollisionConfiguration collisionConfiguration;
+	btDbvtBroadphase overlappingPairCache;
+	btSequentialImpulseConstraintSolver solver;
 	std::unique_ptr<btCollisionDispatcher> dispatcher;
-	std::unique_ptr<btBroadphaseInterface> overlappingPairCache;
-	std::unique_ptr<btSequentialImpulseConstraintSolver> solver;
 	std::unique_ptr<btDynamicsWorld> dynamicsWorld;
 
+	class DebugDraw : public btIDebugDraw
+	{
+		void drawLine(const btVector3& from, const btVector3& to, const btVector3& color) override
+		{
+			wiRenderer::RenderableLine line;
+			line.start = XMFLOAT3(from.x(), from.y(), from.z());
+			line.end = XMFLOAT3(to.x(), to.y(), to.z());
+			line.color_start = line.color_end = XMFLOAT4(color.x(), color.y(), color.z(), 1.0f);
+			wiRenderer::DrawLine(line);
+		}
+		void drawContactPoint(const btVector3& PointOnB, const btVector3& normalOnB, btScalar distance, int lifeTime, const btVector3& color) override
+		{
+		}
+		void reportErrorWarning(const char* warningString) override
+		{
+			wiBackLog::post(warningString);
+		}
+		void draw3dText(const btVector3& location, const char* textString) override
+		{
+		}
+		void setDebugMode(int debugMode) override
+		{
+		}
+		int getDebugMode() const override
+		{
+			return DBG_DrawWireframe;
+		}
+	};
+	DebugDraw debugDraw;
 
 	void Initialize()
 	{
-		// collision configuration contains default setup for memory, collision setup. Advanced users can create their own configuration.
-		collisionConfiguration = std::make_unique<btSoftBodyRigidBodyCollisionConfiguration>();
-
-		// use the default collision dispatcher. For parallel processing you can use a diffent dispatcher (see Extras/BulletMultiThreaded)
-		dispatcher = std::make_unique<btCollisionDispatcher>(collisionConfiguration.get());
-
-		// btDbvtBroadphase is a good general purpose broadphase. You can also try out btAxis3Sweep.
-		overlappingPairCache = std::make_unique<btDbvtBroadphase>();
-
-		// the default constraint solver. For parallel processing you can use a different solver (see Extras/BulletMultiThreaded)
-		solver = std::make_unique<btSequentialImpulseConstraintSolver>();
-
-		dynamicsWorld = std::make_unique<btSoftRigidDynamicsWorld>(dispatcher.get(), overlappingPairCache.get(), solver.get(), collisionConfiguration.get());
+		dispatcher = std::make_unique<btCollisionDispatcher>(&collisionConfiguration);
+		dynamicsWorld = std::make_unique<btSoftRigidDynamicsWorld>(dispatcher.get(), &overlappingPairCache, &solver, &collisionConfiguration);
 
 		dynamicsWorld->getSolverInfo().m_solverMode |= SOLVER_RANDMIZE_ORDER;
 		dynamicsWorld->getDispatchInfo().m_enableSatConvex = true;
@@ -63,58 +85,79 @@ namespace wiPhysicsEngine
 		softWorldInfo.m_gravity.setValue(gravity.x(), gravity.y(), gravity.z());
 		softWorldInfo.m_sparsesdf.Initialize();
 
+		softRigidWorld->setDebugDrawer(&debugDraw);
+
 		wiBackLog::post("wiPhysicsEngine_Bullet Initialized");
 	}
 
 	bool IsEnabled() { return ENABLED; }
 	void SetEnabled(bool value) { ENABLED = value; }
 
-	void AddRigidBody(Entity entity, wiScene::RigidBodyPhysicsComponent& physicscomponent, const wiScene::MeshComponent& mesh, const wiScene::TransformComponent& transform)
-	{
-		btVector3 S(transform.scale_local.x, transform.scale_local.y, transform.scale_local.z);
+	bool IsSimulationEnabled() { return SIMULATION_ENABLED; }
+	void SetSimulationEnabled(bool value) { SIMULATION_ENABLED = value; }
 
+	bool IsDebugDrawEnabled() { return DEBUGDRAW_ENABLED; }
+	void SetDebugDrawEnabled(bool value) { DEBUGDRAW_ENABLED = value; }
+
+	int GetAccuracy() { return ACCURACY; }
+	void SetAccuracy(int value) { ACCURACY = value; }
+
+	void AddRigidBody(Entity entity, wiScene::RigidBodyPhysicsComponent& physicscomponent, const wiScene::TransformComponent& transform, const wiScene::MeshComponent* mesh)
+	{
 		btCollisionShape* shape = nullptr;
 
 		switch (physicscomponent.shape)
 		{
 		case RigidBodyPhysicsComponent::CollisionShape::BOX:
-			shape = new btBoxShape(S);
-			break;
+		{
+			shape = new btBoxShape(btVector3(physicscomponent.box.halfextents.x, physicscomponent.box.halfextents.y, physicscomponent.box.halfextents.z));
+		}
+		break;
 
 		case RigidBodyPhysicsComponent::CollisionShape::SPHERE:
-			shape = new btSphereShape(btScalar(S.x()));
-			break;
+		{
+			shape = new btSphereShape(btScalar(physicscomponent.sphere.radius));
+		}
+		break;
 
 		case RigidBodyPhysicsComponent::CollisionShape::CAPSULE:
-			shape = new btCapsuleShape(btScalar(S.x()), btScalar(S.y()));
+			shape = new btCapsuleShape(btScalar(physicscomponent.capsule.radius), btScalar(physicscomponent.capsule.height));
 			break;
 
 		case RigidBodyPhysicsComponent::CollisionShape::CONVEX_HULL:
+			if(mesh != nullptr)
 			{
 				shape = new btConvexHullShape();
-				for (auto& pos : mesh.vertex_positions)
+				for (auto& pos : mesh->vertex_positions)
 				{
 					((btConvexHullShape*)shape)->addPoint(btVector3(pos.x, pos.y, pos.z));
 				}
+				btVector3 S(transform.scale_local.x, transform.scale_local.y, transform.scale_local.z);
 				shape->setLocalScaling(S);
+			}
+			else
+			{
+				wiBackLog::post("Convex Hull physics requested, but no MeshComponent provided!");
+				assert(0);
 			}
 			break;
 
 		case RigidBodyPhysicsComponent::CollisionShape::TRIANGLE_MESH:
+			if(mesh != nullptr)
 			{
-				int totalVerts = (int)mesh.vertex_positions.size();
-				int totalTriangles = (int)mesh.indices.size() / 3;
+				int totalVerts = (int)mesh->vertex_positions.size();
+				int totalTriangles = (int)mesh->indices.size() / 3;
 
 				btVector3* btVerts = new btVector3[totalVerts];
 				size_t i = 0;
-				for (auto& pos : mesh.vertex_positions)
+				for (auto& pos : mesh->vertex_positions)
 				{
 					btVerts[i++] = btVector3(pos.x, pos.y, pos.z);
 				}
 
-				int* btInd = new int[mesh.indices.size()];
+				int* btInd = new int[mesh->indices.size()];
 				i = 0;
-				for (auto& ind : mesh.indices)
+				for (auto& ind : mesh->indices)
 				{
 					btInd[i++] = ind;
 				}
@@ -133,7 +176,13 @@ namespace wiPhysicsEngine
 
 				bool useQuantizedAabbCompression = true;
 				shape = new btBvhTriangleMeshShape(indexVertexArrays, useQuantizedAabbCompression);
+				btVector3 S(transform.scale_local.x, transform.scale_local.y, transform.scale_local.z);
 				shape->setLocalScaling(S);
+			}
+			else
+			{
+				wiBackLog::post("Triangle Mesh physics requested, but no MeshComponent provided!");
+				assert(0);
 			}
 			break;
 		}
@@ -285,40 +334,34 @@ namespace wiPhysicsEngine
 
 	void RunPhysicsUpdateSystem(
 		wiJobSystem::context& ctx,
-		const WeatherComponent& weather,
-		const ComponentManager<ArmatureComponent>& armatures,
-		ComponentManager<TransformComponent>& transforms,
-		ComponentManager<MeshComponent>& meshes,
-		ComponentManager<ObjectComponent>& objects,
-		ComponentManager<RigidBodyPhysicsComponent>& rigidbodies,
-		ComponentManager<SoftBodyPhysicsComponent>& softbodies,
+		Scene& scene,
 		float dt
 	)
 	{
 		if (!IsEnabled() || dt <= 0)
-		{
 			return;
-		}
-
-		wiJobSystem::Wait(ctx);
 
 		auto range = wiProfiler::BeginRangeCPU("Physics");
 
-		btVector3 wind = btVector3(weather.windDirection.x, weather.windDirection.y, weather.windDirection.z);
+		btVector3 wind = btVector3(scene.weather.windDirection.x, scene.weather.windDirection.y, scene.weather.windDirection.z);
 
 		// System will register rigidbodies to objects, and update physics engine state for kinematics:
-		wiJobSystem::Dispatch(ctx, (uint32_t)rigidbodies.GetCount(), 256, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)scene.rigidbodies.GetCount(), 256, [&](wiJobArgs args) {
 
-			RigidBodyPhysicsComponent& physicscomponent = rigidbodies[args.jobIndex];
-			Entity entity = rigidbodies.GetEntity(args.jobIndex);
+			RigidBodyPhysicsComponent& physicscomponent = scene.rigidbodies[args.jobIndex];
+			Entity entity = scene.rigidbodies.GetEntity(args.jobIndex);
 
 			if (physicscomponent.physicsobject == nullptr)
 			{
-				TransformComponent& transform = *transforms.GetComponent(entity);
-				const ObjectComponent& object = *objects.GetComponent(entity);
-				const MeshComponent& mesh = *meshes.GetComponent(object.meshID);
+				TransformComponent& transform = *scene.transforms.GetComponent(entity);
+				const ObjectComponent* object = scene.objects.GetComponent(entity);
+				const MeshComponent* mesh = nullptr;
+				if (object != nullptr)
+				{
+					mesh = scene.meshes.GetComponent(object->meshID);
+				}
 				physicsLock.lock();
-				AddRigidBody(entity, physicscomponent, mesh, transform);
+				AddRigidBody(entity, physicscomponent, transform, mesh);
 				physicsLock.unlock();
 			}
 
@@ -337,10 +380,17 @@ namespace wiPhysicsEngine
 				}
 				rigidbody->setActivationState(activationState);
 
+				rigidbody->setDamping(
+					physicscomponent.damping_linear,
+					physicscomponent.damping_angular
+				);
+				rigidbody->setFriction(physicscomponent.friction);
+				rigidbody->setRestitution(physicscomponent.restitution);
+
 				// For kinematic object, system updates physics state, else the physics updates system state:
-				if (physicscomponent.IsKinematic())
+				if (physicscomponent.IsKinematic() || !IsSimulationEnabled())
 				{
-					TransformComponent& transform = *transforms.GetComponent(entity);
+					TransformComponent& transform = *scene.transforms.GetComponent(entity);
 
 					btMotionState* motionState = rigidbody->getMotionState();
 					btTransform physicsTransform;
@@ -352,18 +402,38 @@ namespace wiPhysicsEngine
 					physicsTransform.setOrigin(T);
 					physicsTransform.setRotation(R);
 					motionState->setWorldTransform(physicsTransform);
+
+					if (!IsSimulationEnabled())
+					{
+						// This is a more direct way of manipulating rigid body:
+						rigidbody->setWorldTransform(physicsTransform);
+					}
+
+					btCollisionShape* shape = rigidbody->getCollisionShape();
+					XMFLOAT3 scale = transform.GetScale();
+					btVector3 S(scale.x, scale.y, scale.z);
+					shape->setLocalScaling(S);
 				}
 			}
 		});
 
 		// System will register softbodies to meshes and update physics engine state:
-		wiJobSystem::Dispatch(ctx, (uint32_t)softbodies.GetCount(), 1, [&](wiJobDispatchArgs args) {
+		wiJobSystem::Dispatch(ctx, (uint32_t)scene.softbodies.GetCount(), 1, [&](wiJobArgs args) {
 
-			SoftBodyPhysicsComponent& physicscomponent = softbodies[args.jobIndex];
-			Entity entity = softbodies.GetEntity(args.jobIndex);
-			MeshComponent& mesh = *meshes.GetComponent(entity); 
-			const ArmatureComponent* armature = mesh.IsSkinned() ? armatures.GetComponent(mesh.armatureID) : nullptr;
+			SoftBodyPhysicsComponent& physicscomponent = scene.softbodies[args.jobIndex];
+			Entity entity = scene.softbodies.GetEntity(args.jobIndex);
+			MeshComponent& mesh = *scene.meshes.GetComponent(entity);
+			const ArmatureComponent* armature = mesh.IsSkinned() ? scene.armatures.GetComponent(mesh.armatureID) : nullptr;
 			mesh.SetDynamic(true);
+
+			if (!mesh.vertexBuffer_PRE.IsValid())
+			{
+				using namespace wiGraphics;
+				GraphicsDevice* device = wiRenderer::GetDevice();
+				device->CreateBuffer(&mesh.vertexBuffer_POS.desc, nullptr, &mesh.streamoutBuffer_POS);
+				device->CreateBuffer(&mesh.vertexBuffer_POS.desc, nullptr, &mesh.vertexBuffer_PRE);
+				device->CreateBuffer(&mesh.vertexBuffer_TAN.desc, nullptr, &mesh.streamoutBuffer_TAN);
+			}
 
 			if (physicscomponent._flags & SoftBodyPhysicsComponent::FORCE_RESET)
 			{
@@ -386,6 +456,9 @@ namespace wiPhysicsEngine
 				btSoftBody* softbody = (btSoftBody*)physicscomponent.physicsobject;
 				softbody->m_cfg.kDF = physicscomponent.friction;
 				softbody->setWindVelocity(wind);
+
+				softbody->setFriction(physicscomponent.friction);
+				softbody->setRestitution(physicscomponent.restitution);
 
 				// This is different from rigid bodies, because soft body is a per mesh component (no TransformComponent). World matrix is propagated down from single mesh instance (ObjectUpdateSystem).
 				XMMATRIX worldMatrix = XMLoadFloat4x4(&physicscomponent.worldMatrix);
@@ -412,7 +485,10 @@ namespace wiPhysicsEngine
 		wiJobSystem::Wait(ctx);
 
 		// Perform internal simulation step:
-		dynamicsWorld->stepSimulation(dt, 10);
+		if (IsSimulationEnabled())
+		{
+			dynamicsWorld->stepSimulation(dt, ACCURACY);
+		}
 
 		// Feedback physics engine state to system:
 		for (int i = 0; i < dynamicsWorld->getCollisionObjectArray().size(); ++i)
@@ -423,8 +499,8 @@ namespace wiPhysicsEngine
 			btRigidBody* rigidbody = btRigidBody::upcast(collisionobject);
 			if (rigidbody != nullptr)
 			{
-				RigidBodyPhysicsComponent* physicscomponent = rigidbodies.GetComponent(entity);
-				if (physicscomponent == nullptr)
+				RigidBodyPhysicsComponent* physicscomponent = scene.rigidbodies.GetComponent(entity);
+				if (physicscomponent == nullptr || physicscomponent->physicsobject != rigidbody)
 				{
 					dynamicsWorld->removeRigidBody(rigidbody);
 					i--;
@@ -432,9 +508,9 @@ namespace wiPhysicsEngine
 				}
 
 				// Feedback non-kinematic objects to system:
-				if(!physicscomponent->IsKinematic())
+				if (IsSimulationEnabled() && !physicscomponent->IsKinematic())
 				{
-					TransformComponent& transform = *transforms.GetComponent(entity);
+					TransformComponent& transform = *scene.transforms.GetComponent(entity);
 
 					btMotionState* motionState = rigidbody->getMotionState();
 					btTransform physicsTransform;
@@ -454,15 +530,15 @@ namespace wiPhysicsEngine
 
 				if (softbody != nullptr)
 				{
-					SoftBodyPhysicsComponent* physicscomponent = softbodies.GetComponent(entity);
-					if (physicscomponent == nullptr)
+					SoftBodyPhysicsComponent* physicscomponent = scene.softbodies.GetComponent(entity);
+					if (physicscomponent == nullptr || physicscomponent->physicsobject != softbody)
 					{
 						((btSoftRigidDynamicsWorld*)dynamicsWorld.get())->removeSoftBody(softbody);
 						i--;
 						continue;
 					}
 
-					MeshComponent& mesh = *meshes.GetComponent(entity);
+					MeshComponent& mesh = *scene.meshes.GetComponent(entity);
 
 					// System mesh aabb will be queried from physics engine soft body:
 					btVector3 aabb_min;
@@ -489,10 +565,147 @@ namespace wiPhysicsEngine
 						normal.z = -node.m_n.getZ();
 						vertex.MakeFromParams(normal);
 					}
+
+					// Update tangent vectors:
+					if (!mesh.vertex_uvset_0.empty())
+					{
+						for (size_t i = 0; i < mesh.indices.size(); i += 3)
+						{
+							const uint32_t i0 = mesh.indices[i + 0];
+							const uint32_t i1 = mesh.indices[i + 1];
+							const uint32_t i2 = mesh.indices[i + 2];
+
+							const XMFLOAT3 v0 = physicscomponent->vertex_positions_simulation[i0].pos;
+							const XMFLOAT3 v1 = physicscomponent->vertex_positions_simulation[i1].pos;
+							const XMFLOAT3 v2 = physicscomponent->vertex_positions_simulation[i2].pos;
+
+							const XMFLOAT2 u0 = mesh.vertex_uvset_0[i0];
+							const XMFLOAT2 u1 = mesh.vertex_uvset_0[i1];
+							const XMFLOAT2 u2 = mesh.vertex_uvset_0[i2];
+
+							const XMVECTOR nor0 = physicscomponent->vertex_positions_simulation[i0].LoadNOR();
+							const XMVECTOR nor1 = physicscomponent->vertex_positions_simulation[i1].LoadNOR();
+							const XMVECTOR nor2 = physicscomponent->vertex_positions_simulation[i2].LoadNOR();
+
+							const XMVECTOR facenormal = XMVector3Normalize(XMVectorAdd(XMVectorAdd(nor0, nor1), nor2));
+
+							const float x1 = v1.x - v0.x;
+							const float x2 = v2.x - v0.x;
+							const float y1 = v1.y - v0.y;
+							const float y2 = v2.y - v0.y;
+							const float z1 = v1.z - v0.z;
+							const float z2 = v2.z - v0.z;
+
+							const float s1 = u1.x - u0.x;
+							const float s2 = u2.x - u0.x;
+							const float t1 = u1.y - u0.y;
+							const float t2 = u2.y - u0.y;
+
+							const float r = 1.0f / (s1 * t2 - s2 * t1);
+							const XMVECTOR sdir = XMVectorSet((t2 * x1 - t1 * x2) * r, (t2 * y1 - t1 * y2) * r,
+								(t2 * z1 - t1 * z2) * r, 0);
+							const XMVECTOR tdir = XMVectorSet((s1 * x2 - s2 * x1) * r, (s1 * y2 - s2 * y1) * r,
+								(s1 * z2 - s2 * z1) * r, 0);
+
+							XMVECTOR tangent;
+							tangent = XMVector3Normalize(XMVectorSubtract(sdir, XMVectorMultiply(facenormal, XMVector3Dot(facenormal, sdir))));
+							float sign = XMVectorGetX(XMVector3Dot(XMVector3Cross(tangent, facenormal), tdir)) < 0.0f ? -1.0f : 1.0f;
+
+							XMFLOAT3 t;
+							XMStoreFloat3(&t, tangent);
+
+							physicscomponent->vertex_tangents_tmp[i0].x += t.x;
+							physicscomponent->vertex_tangents_tmp[i0].y += t.y;
+							physicscomponent->vertex_tangents_tmp[i0].z += t.z;
+							physicscomponent->vertex_tangents_tmp[i0].w = sign;
+
+							physicscomponent->vertex_tangents_tmp[i1].x += t.x;
+							physicscomponent->vertex_tangents_tmp[i1].y += t.y;
+							physicscomponent->vertex_tangents_tmp[i1].z += t.z;
+							physicscomponent->vertex_tangents_tmp[i1].w = sign;
+
+							physicscomponent->vertex_tangents_tmp[i2].x += t.x;
+							physicscomponent->vertex_tangents_tmp[i2].y += t.y;
+							physicscomponent->vertex_tangents_tmp[i2].z += t.z;
+							physicscomponent->vertex_tangents_tmp[i2].w = sign;
+						}
+
+						for (size_t i = 0; i < physicscomponent->vertex_tangents_simulation.size(); ++i)
+						{
+							physicscomponent->vertex_tangents_simulation[i].FromFULL(physicscomponent->vertex_tangents_tmp[i]);
+						}
+					}
+
+					if (scene.cmd != wiGraphics::INVALID_COMMANDLIST)
+					{
+						using namespace wiGraphics;
+						GraphicsDevice* device = wiRenderer::GetDevice();
+						scene.cmd_locker.lock();
+						device->UpdateBuffer(&mesh.streamoutBuffer_POS, physicscomponent->vertex_positions_simulation.data(), scene.cmd);
+						device->UpdateBuffer(&mesh.streamoutBuffer_TAN, physicscomponent->vertex_tangents_simulation.data(), scene.cmd);
+						scene.cmd_locker.unlock();
+					}
+
 				}
 			}
 		}
 
+		if (IsDebugDrawEnabled())
+		{
+			dynamicsWorld->debugDrawWorld();
+		}
+
 		wiProfiler::EndRange(range); // Physics
 	}
+
+
+
+	void ApplyForce(
+		const wiScene::RigidBodyPhysicsComponent& physicscomponent,
+		const XMFLOAT3& force
+	)
+	{
+		if (physicscomponent.physicsobject != nullptr)
+		{
+			btRigidBody* rigidbody = (btRigidBody*)physicscomponent.physicsobject;
+			rigidbody->applyCentralForce(btVector3(force.x, force.y, force.z));
+		}
+	}
+	void ApplyForceAt(
+		const wiScene::RigidBodyPhysicsComponent& physicscomponent,
+		const XMFLOAT3& force,
+		const XMFLOAT3& at
+	)
+	{
+		if (physicscomponent.physicsobject != nullptr)
+		{
+			btRigidBody* rigidbody = (btRigidBody*)physicscomponent.physicsobject;
+			rigidbody->applyForce(btVector3(force.x, force.y, force.z), btVector3(at.x, at.y, at.z));
+		}
+	}
+
+	void ApplyImpulse(
+		const wiScene::RigidBodyPhysicsComponent& physicscomponent,
+		const XMFLOAT3& impulse
+	)
+	{
+		if (physicscomponent.physicsobject != nullptr)
+		{
+			btRigidBody* rigidbody = (btRigidBody*)physicscomponent.physicsobject;
+			rigidbody->applyCentralImpulse(btVector3(impulse.x, impulse.y, impulse.z));
+		}
+	}
+	void ApplyImpulseAt(
+		const wiScene::RigidBodyPhysicsComponent& physicscomponent,
+		const XMFLOAT3& impulse,
+		const XMFLOAT3& at
+	)
+	{
+		if (physicscomponent.physicsobject != nullptr)
+		{
+			btRigidBody* rigidbody = (btRigidBody*)physicscomponent.physicsobject;
+			rigidbody->applyImpulse(btVector3(impulse.x, impulse.y, impulse.z), btVector3(at.x, at.y, at.z));
+		}
+	}
+
 }

@@ -9,6 +9,7 @@
 #include "wiImage.h"
 #include "wiLua.h"
 #include "wiInput.h"
+#include "wiPlatform.h"
 
 #include <mutex>
 #include <sstream>
@@ -151,14 +152,21 @@ namespace wiBackLog
 	}
 	void post(const char* input) 
 	{
-		logLock.lock();
 		stringstream ss("");
 		ss << input << endl;
+
+		logLock.lock();
 		stream.push_back(ss.str().c_str());
 		if (stream.size() > deletefromline) {
 			stream.pop_front();
 		}
 		logLock.unlock();
+
+#ifdef _WIN32
+		OutputDebugStringA(ss.str().c_str());
+#else
+        std::cout << ss.str();
+#endif // _WIN32
 	}
 	void input(const char& input) 
 	{
@@ -174,7 +182,7 @@ namespace wiBackLog
 		if (history.size() > deletefromline) {
 			history.pop_front();
 		}
-		wiLua::GetGlobal()->RunText(inputArea.str());
+		wiLua::RunText(inputArea.str());
 		inputArea.str("");
 	}
 	void deletefromInput() 

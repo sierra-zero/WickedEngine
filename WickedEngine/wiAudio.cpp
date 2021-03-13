@@ -4,29 +4,24 @@
 
 #include <vector>
 
+#define STB_VORBIS_HEADER_ONLY
+#include "Utility/stb_vorbis.c"
+
+#ifdef _WIN32
+
 #include <wrl/client.h> // ComPtr
 #include <xaudio2.h>
 #include <xaudio2fx.h>
 #include <x3daudio.h>
 #pragma comment(lib,"xaudio2.lib")
 
-#ifdef _XBOX //Big-Endian
-#define fourccRIFF 'RIFF'
-#define fourccDATA 'data'
-#define fourccFMT 'fmt '
-#define fourccWAVE 'WAVE'
-#define fourccXWMA 'XWMA'
-#define fourccDPDS 'dpds'
-#endif
-
-#ifndef _XBOX //Little-Endian
+//Little-Endian things:
 #define fourccRIFF 'FFIR'
 #define fourccDATA 'atad'
 #define fourccFMT ' tmf'
 #define fourccWAVE 'EVAW'
 #define fourccXWMA 'AMWX'
 #define fourccDPDS 'sdpd'
-#endif
 
 namespace wiAudio
 {
@@ -81,7 +76,7 @@ namespace wiAudio
 			hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
 			assert(SUCCEEDED(hr));
 
-			hr = XAudio2Create(&audioEngine, 0, XAUDIO2_DEFAULT_PROCESSOR);
+			hr = XAudio2Create(&audioEngine, 0, XAUDIO2_USE_DEFAULT_PROCESSOR);
 			assert(SUCCEEDED(hr));
 
 #ifdef _DEBUG
@@ -94,7 +89,17 @@ namespace wiAudio
 			hr = audioEngine->CreateMasteringVoice(&masteringVoice);
 			assert(SUCCEEDED(hr));
 
+			if (masteringVoice == nullptr)
+			{
+				wiBackLog::post("Failed to create XAudio2 mastering voice!");
+				return;
+			}
+
 			masteringVoice->GetVoiceDetails(&masteringVoiceDetails);
+
+			// Without clamping sample rate, it was crashing 32bit 192kHz audio devices
+			if (masteringVoiceDetails.InputSampleRate > 48000)
+				masteringVoiceDetails.InputSampleRate = 48000;
 
 			for (int i = 0; i < SUBMIX_TYPE_COUNT; ++i)
 			{
@@ -258,7 +263,12 @@ namespace wiAudio
 	}
 	bool CreateSound(const std::vector<uint8_t>& data, Sound* sound)
 	{
+		return CreateSound(data.data(), data.size(), sound);
+	}
+	bool CreateSound(const uint8_t* data, size_t size, Sound* sound)
+	{
 		std::shared_ptr<SoundInternal> soundinternal = std::make_shared<SoundInternal>();
+		soundinternal->audio = audio;
 		sound->internal_state = soundinternal;
 
 		DWORD dwChunkSize;
@@ -266,24 +276,64 @@ namespace wiAudio
 
 		bool success;
 
-		success = FindChunk(data.data(), fourccRIFF, dwChunkSize, dwChunkPosition);
-		assert(success);
-		DWORD filetype;
-		memcpy(&filetype, data.data() + dwChunkPosition, sizeof(DWORD));
-		assert(filetype == fourccWAVE);
+		success = FindChunk(data, fourccRIFF, dwChunkSize, dwChunkPosition);
+		if (success)
+		{
+			// Wav decoder:
+			DWORD filetype;
+			memcpy(&filetype, data + dwChunkPosition, sizeof(DWORD));
+			if (filetype != fourccWAVE)
+			{
+				assert(0);
+				return false;
+			}
 
-		soundinternal->audio = audio;
+			success = FindChunk(data, fourccFMT, dwChunkSize, dwChunkPosition);
+			if (!success)
+			{
+				assert(0);
+				return false;
+			}
+			memcpy(&soundinternal->wfx, data + dwChunkPosition, dwChunkSize);
+			soundinternal->wfx.wFormatTag = WAVE_FORMAT_PCM;
 
-		success = FindChunk(data.data(), fourccFMT, dwChunkSize, dwChunkPosition);
-		assert(success);
-		memcpy(&soundinternal->wfx, data.data() + dwChunkPosition, dwChunkSize);
-		soundinternal->wfx.wFormatTag = WAVE_FORMAT_PCM;
+			success = FindChunk(data, fourccDATA, dwChunkSize, dwChunkPosition);
+			if (!success)
+			{
+				assert(0);
+				return false;
+			}
 
-		success = FindChunk(data.data(), fourccDATA, dwChunkSize, dwChunkPosition);
-		assert(success);
+			soundinternal->audioData.resize(dwChunkSize);
+			memcpy(soundinternal->audioData.data(), data + dwChunkPosition, dwChunkSize);
+		}
+		else
+		{
+			// Ogg decoder:
+			int channels = 0;
+			int sample_rate = 0;
+			short* output = nullptr;
+			int samples = stb_vorbis_decode_memory(data, (int)size, &channels, &sample_rate, &output);
+			if (samples < 0)
+			{
+				assert(0);
+				return false;
+			}
 
-		soundinternal->audioData.resize(dwChunkSize);
-		memcpy(soundinternal->audioData.data(), data.data() + dwChunkPosition, dwChunkSize);
+			// WAVEFORMATEX: https://docs.microsoft.com/en-us/previous-versions/dd757713(v=vs.85)?redirectedfrom=MSDN
+			soundinternal->wfx.wFormatTag = WAVE_FORMAT_PCM;
+			soundinternal->wfx.nChannels = (WORD)channels;
+			soundinternal->wfx.nSamplesPerSec = (DWORD)sample_rate;
+			soundinternal->wfx.wBitsPerSample = sizeof(short) * 8;
+			soundinternal->wfx.nBlockAlign = (WORD)channels * sizeof(short); // is this right?
+			soundinternal->wfx.nAvgBytesPerSec = soundinternal->wfx.nSamplesPerSec * soundinternal->wfx.nBlockAlign;
+
+			size_t output_size = (size_t)samples * sizeof(short);
+			soundinternal->audioData.resize(output_size);
+			memcpy(soundinternal->audioData.data(), output, output_size);
+
+			free(output);
+		}
 
 		return true;
 	}
@@ -299,9 +349,12 @@ namespace wiAudio
 
 		XAUDIO2_SEND_DESCRIPTOR SFXSend[] = { 
 			{ XAUDIO2_SEND_USEFILTER, audio->submixVoices[instance->type] },
-			{ XAUDIO2_SEND_USEFILTER, audio->reverbSubmix },
+			{ XAUDIO2_SEND_USEFILTER, audio->reverbSubmix }, // this should be last to enable/disable reverb simply
 		};
-		XAUDIO2_VOICE_SENDS SFXSendList = { arraysize(SFXSend), SFXSend };
+		XAUDIO2_VOICE_SENDS SFXSendList = { 
+			instance->IsEnableReverb() ? arraysize(SFXSend) : 1, 
+			SFXSend 
+		};
 
 		hr = audio->audioEngine->CreateSourceVoice(&instanceinternal->sourceVoice, &soundinternal->wfx, 
 			0, XAUDIO2_DEFAULT_FREQ_RATIO, NULL, &SFXSendList, NULL);
@@ -472,16 +525,19 @@ namespace wiAudio
 				settings.pMatrixCoefficients
 			);
 			assert(SUCCEEDED(hr));
-
-			hr = instanceinternal->sourceVoice->SetOutputMatrix(audio->reverbSubmix, settings.SrcChannelCount, 1, &settings.ReverbLevel);
-			assert(SUCCEEDED(hr));
 			
 			XAUDIO2_FILTER_PARAMETERS FilterParametersDirect = { LowPassFilter, 2.0f * sinf(X3DAUDIO_PI / 6.0f * settings.LPFDirectCoefficient), 1.0f };
 			hr = instanceinternal->sourceVoice->SetOutputFilterParameters(audio->submixVoices[instance->type], &FilterParametersDirect);
 			assert(SUCCEEDED(hr));
-			XAUDIO2_FILTER_PARAMETERS FilterParametersReverb = { LowPassFilter, 2.0f * sinf(X3DAUDIO_PI / 6.0f * settings.LPFReverbCoefficient), 1.0f };
-			hr = instanceinternal->sourceVoice->SetOutputFilterParameters(audio->reverbSubmix, &FilterParametersReverb);
-			assert(SUCCEEDED(hr));
+
+			if (instance->IsEnableReverb())
+			{
+				hr = instanceinternal->sourceVoice->SetOutputMatrix(audio->reverbSubmix, settings.SrcChannelCount, 1, &settings.ReverbLevel);
+				assert(SUCCEEDED(hr));
+				XAUDIO2_FILTER_PARAMETERS FilterParametersReverb = { LowPassFilter, 2.0f * sinf(X3DAUDIO_PI / 6.0f * settings.LPFReverbCoefficient), 1.0f };
+				hr = instanceinternal->sourceVoice->SetOutputFilterParameters(audio->reverbSubmix, &FilterParametersReverb);
+				assert(SUCCEEDED(hr));
+			}
 		}
 	}
 
@@ -493,3 +549,31 @@ namespace wiAudio
 		assert(SUCCEEDED(hr));
 	}
 }
+
+#else
+
+namespace wiAudio
+{
+	void Initialize() {}
+
+	bool CreateSound(const std::string& filename, Sound* sound) { return false; }
+	bool CreateSound(const std::vector<uint8_t>& data, Sound* sound) { return false; }
+	bool CreateSound(const uint8_t* data, size_t size, Sound* sound) { return false; }
+	bool CreateSoundInstance(const Sound* sound, SoundInstance* instance) { return false; }
+
+	void Play(SoundInstance* instance) {}
+	void Pause(SoundInstance* instance) {}
+	void Stop(SoundInstance* instance) {}
+	void SetVolume(float volume, SoundInstance* instance) {}
+	float GetVolume(const SoundInstance* instance) { return 0; }
+	void ExitLoop(SoundInstance* instance) {}
+
+	void SetSubmixVolume(SUBMIX_TYPE type, float volume) {}
+	float GetSubmixVolume(SUBMIX_TYPE type) { return 0; }
+
+	void Update3D(SoundInstance* instance, const SoundInstance3D& instance3D) {}
+
+	void SetReverb(REVERB_PRESET preset) {}
+}
+
+#endif // _WIN32

@@ -1,6 +1,6 @@
 #include "wiPlatform.h"
 
-#ifdef PLATFORM_UWP
+#if defined(_WIN32) && defined(PLATFORM_UWP)
 #include "wiNetwork.h"
 #include "wiBackLog.h"
 
@@ -42,4 +42,4 @@ namespace wiNetwork
 
 }
 
-#endif // PLATFORM_UWP
+#endif // _WIN32 && PLATFORM_UWP

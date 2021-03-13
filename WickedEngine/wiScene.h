@@ -7,8 +7,8 @@
 #include "ShaderInterop_Renderer.h"
 #include "wiJobSystem.h"
 #include "wiAudio.h"
-#include "wiRenderer.h"
 #include "wiResourceManager.h"
+#include "wiSpinLock.h"
 
 #include "wiECS.h"
 #include "wiScene_Decl.h"
@@ -29,16 +29,19 @@ namespace wiScene
 		inline void operator=(std::string&& str) { name = std::move(str); }
 		inline bool operator==(const std::string& str) const { return name.compare(str) == 0; }
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct LayerComponent
 	{
 		uint32_t layerMask = ~0;
 
-		inline uint32_t GetLayerMask() const { return layerMask; }
+		// Non-serialized attributes:
+		uint32_t propagationMask = ~0; // This shouldn't be modified by user usually
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		inline uint32_t GetLayerMask() const { return layerMask & propagationMask; }
+
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 	
 	struct TransformComponent
@@ -51,10 +54,14 @@ namespace wiScene
 		uint32_t _flags = DIRTY;
 
 		XMFLOAT3 scale_local = XMFLOAT3(1, 1, 1);
-		XMFLOAT4 rotation_local = XMFLOAT4(0, 0, 0, 1);
+		XMFLOAT4 rotation_local = XMFLOAT4(0, 0, 0, 1);	// this is a quaternion
 		XMFLOAT3 translation_local = XMFLOAT3(0, 0, 0);
 
 		// Non-serialized attributes:
+
+		// The world matrix can be computed from local scale, rotation, translation
+		//	- by calling UpdateTransform()
+		//	- or by calling SetDirty() and letting the TransformUpdateSystem handle the updating
 		XMFLOAT4X4 world = IDENTITYMATRIX;
 
 		inline void SetDirty(bool value = true) { if (value) { _flags |= DIRTY; } else { _flags &= ~DIRTY; } }
@@ -66,10 +73,15 @@ namespace wiScene
 		XMVECTOR GetPositionV() const;
 		XMVECTOR GetRotationV() const;
 		XMVECTOR GetScaleV() const;
+		// Computes the local space matrix from scale, rotation, translation and returns it
 		XMMATRIX GetLocalMatrix() const;
+		// Applies the local space to the world space matrix. This overwrites world matrix
 		void UpdateTransform();
+		// Apply a parent transform relative to the loacl space. This overwrites world matrix
 		void UpdateTransform_Parented(const TransformComponent& parent);
+		// Apply the world matrix to the local space. This overwrites scale, rotation, translation
 		void ApplyTransform();
+		// Clears the local space. This overwrites scale, rotation, translation
 		void ClearTransform();
 		void Translate(const XMFLOAT3& value);
 		void Translate(const XMVECTOR& value);
@@ -83,7 +95,7 @@ namespace wiScene
 		void Lerp(const TransformComponent& a, const TransformComponent& b, float t);
 		void CatmullRom(const TransformComponent& a, const TransformComponent& b, const TransformComponent& c, const TransformComponent& d, float t);
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct PreviousFrameTransformComponent
@@ -91,7 +103,7 @@ namespace wiScene
 		// Non-serialized attributes:
 		XMFLOAT4X4 world_prev;
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct HierarchyComponent
@@ -99,7 +111,7 @@ namespace wiScene
 		wiECS::Entity parentID = wiECS::INVALID_ENTITY;
 		uint32_t layerMask_bind; // saved child layermask at the time of binding
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct MaterialComponent
@@ -109,63 +121,105 @@ namespace wiScene
 			EMPTY = 0,
 			DIRTY = 1 << 0,
 			CAST_SHADOW = 1 << 1,
-			PLANAR_REFLECTION = 1 << 2,
-			WATER = 1 << 3,
-			FLIP_NORMALMAP = 1 << 4,
+			_DEPRECATED_PLANAR_REFLECTION = 1 << 2,
+			_DEPRECATED_WATER = 1 << 3,
+			_DEPRECATED_FLIP_NORMALMAP = 1 << 4,
 			USE_VERTEXCOLORS = 1 << 5,
 			SPECULAR_GLOSSINESS_WORKFLOW = 1 << 6,
 			OCCLUSION_PRIMARY = 1 << 7,
 			OCCLUSION_SECONDARY = 1 << 8,
 			USE_WIND = 1 << 9,
+			DISABLE_RECEIVE_SHADOW = 1 << 10,
 		};
-		uint32_t _flags = DIRTY | CAST_SHADOW;
+		uint32_t _flags = CAST_SHADOW;
+
+		enum SHADERTYPE
+		{
+			SHADERTYPE_PBR,
+			SHADERTYPE_PBR_PLANARREFLECTION,
+			SHADERTYPE_PBR_PARALLAXOCCLUSIONMAPPING,
+			SHADERTYPE_PBR_ANISOTROPIC,
+			SHADERTYPE_WATER,
+			SHADERTYPE_CARTOON,
+			SHADERTYPE_UNLIT,
+			SHADERTYPE_PBR_CLOTH,
+			SHADERTYPE_PBR_CLEARCOAT,
+			SHADERTYPE_PBR_CLOTH_CLEARCOAT,
+			SHADERTYPE_COUNT
+		} shaderType = SHADERTYPE_PBR;
 
 		STENCILREF engineStencilRef = STENCILREF_DEFAULT;
 		uint8_t userStencilRef = 0;
 		BLENDMODE userBlendMode = BLENDMODE_OPAQUE;
 
 		XMFLOAT4 baseColor = XMFLOAT4(1, 1, 1, 1);
+		XMFLOAT4 specularColor = XMFLOAT4(1, 1, 1, 1);
 		XMFLOAT4 emissiveColor = XMFLOAT4(1, 1, 1, 0);
+		XMFLOAT4 subsurfaceScattering = XMFLOAT4(1, 1, 1, 0);
 		XMFLOAT4 texMulAdd = XMFLOAT4(1, 1, 0, 0);
 		float roughness = 0.2f;
 		float reflectance = 0.02f;
 		float metalness = 0.0f;
-		float refractionIndex = 0.0f;
-		float subsurfaceScattering = 0.0f;
 		float normalMapStrength = 1.0f;
 		float parallaxOcclusionMapping = 0.0f;
 		float displacementMapping = 0.0f;
-
+		float refraction = 0.0f;
+		float transmission = 0.0f;
 		float alphaRef = 1.0f;
+
+		XMFLOAT4 sheenColor = XMFLOAT4(1, 1, 1, 1);
+		float sheenRoughness = 0;
+		float clearcoat = 0;
+		float clearcoatRoughness = 0;
+
+		wiGraphics::SHADING_RATE shadingRate = wiGraphics::SHADING_RATE_1X1;
 		
 		XMFLOAT2 texAnimDirection = XMFLOAT2(0, 0);
 		float texAnimFrameRate = 0.0f;
 		float texAnimElapsedTime = 0.0f;
 
-		std::string baseColorMapName;
-		std::string surfaceMapName;
-		std::string normalMapName;
-		std::string displacementMapName;
-		std::string emissiveMapName;
-		std::string occlusionMapName;
+		enum TEXTURESLOT
+		{
+			BASECOLORMAP,
+			NORMALMAP,
+			SURFACEMAP,
+			EMISSIVEMAP,
+			DISPLACEMENTMAP,
+			OCCLUSIONMAP,
+			TRANSMISSIONMAP,
+			SHEENCOLORMAP,
+			SHEENROUGHNESSMAP,
+			CLEARCOATMAP,
+			CLEARCOATROUGHNESSMAP,
+			CLEARCOATNORMALMAP,
 
-		uint32_t uvset_baseColorMap = 0;
-		uint32_t uvset_surfaceMap = 0;
-		uint32_t uvset_normalMap = 0;
-		uint32_t uvset_displacementMap = 0;
-		uint32_t uvset_emissiveMap = 0;
-		uint32_t uvset_occlusionMap = 0;
+			TEXTURESLOT_COUNT
+		};
+		struct TextureMap
+		{
+			std::string name;
+			uint32_t uvset = 0;
+			std::shared_ptr<wiResource> resource;
+			const wiGraphics::GPUResource* GetGPUResource() const
+			{
+				if (resource == nullptr || !resource->texture.IsValid())
+					return nullptr;
+				return &resource->texture;
+			}
+			int GetUVSet() const
+			{
+				if (resource == nullptr || !resource->texture.IsValid())
+					return -1;
+				return (int)uvset;
+			}
+		};
+		TextureMap textures[TEXTURESLOT_COUNT];
+
+		int customShaderID = -1;
 
 		// Non-serialized attributes:
-		std::shared_ptr<wiResource> baseColorMap;
-		std::shared_ptr<wiResource> surfaceMap;
-		std::shared_ptr<wiResource> normalMap;
-		std::shared_ptr<wiResource> displacementMap;
-		std::shared_ptr<wiResource> emissiveMap;
-		std::shared_ptr<wiResource> occlusionMap;
 		wiGraphics::GPUBuffer constantBuffer;
-
-		int customShaderID = -1; // for now, this is not serialized; need to consider actual proper use case first
+		uint32_t layerMask = ~0u;
 
 		// User stencil value can be in range [0, 15]
 		inline void SetUserStencilRef(uint8_t value)
@@ -173,74 +227,82 @@ namespace wiScene
 			assert(value < 16);
 			userStencilRef = value & 0x0F;
 		}
-		inline uint32_t GetStencilRef() const
-		{
-			return wiRenderer::CombineStencilrefs(engineStencilRef, userStencilRef);
-		}
-
-		const wiGraphics::Texture* GetBaseColorMap() const;
-		const wiGraphics::Texture* GetNormalMap() const;
-		const wiGraphics::Texture* GetSurfaceMap() const;
-		const wiGraphics::Texture* GetDisplacementMap() const;
-		const wiGraphics::Texture* GetEmissiveMap() const;
-		const wiGraphics::Texture* GetOcclusionMap() const;
+		uint32_t GetStencilRef() const;
 
 		inline float GetOpacity() const { return baseColor.w; }
 		inline float GetEmissiveStrength() const { return emissiveColor.w; }
 		inline int GetCustomShaderID() const { return customShaderID; }
 
+		inline bool HasPlanarReflection() const { return shaderType == SHADERTYPE_PBR_PLANARREFLECTION || shaderType == SHADERTYPE_WATER; }
+
 		inline void SetDirty(bool value = true) { if (value) { _flags |= DIRTY; } else { _flags &= ~DIRTY; } }
 		inline bool IsDirty() const { return _flags & DIRTY; }
 
 		inline void SetCastShadow(bool value) { if (value) { _flags |= CAST_SHADOW; } else { _flags &= ~CAST_SHADOW; } }
-		inline void SetPlanarReflections(bool value) { if (value) { _flags |= PLANAR_REFLECTION; } else { _flags &= ~PLANAR_REFLECTION; } }
-		inline void SetWater(bool value) { if (value) { _flags |= WATER; } else { _flags &= ~WATER; } }
+		inline void SetReceiveShadow(bool value) { SetDirty(); if (value) { _flags &= ~DISABLE_RECEIVE_SHADOW; } else { _flags |= DISABLE_RECEIVE_SHADOW; } }
 		inline void SetOcclusionEnabled_Primary(bool value) { SetDirty(); if (value) { _flags |= OCCLUSION_PRIMARY; } else { _flags &= ~OCCLUSION_PRIMARY; } }
 		inline void SetOcclusionEnabled_Secondary(bool value) { SetDirty(); if (value) { _flags |= OCCLUSION_SECONDARY; } else { _flags &= ~OCCLUSION_SECONDARY; } }
 
-		inline bool IsTransparent() const { return userBlendMode != BLENDMODE_OPAQUE || IsCustomShader() || IsWater(); }
-		inline BLENDMODE GetBlendMode() const { if (userBlendMode == BLENDMODE_OPAQUE && IsTransparent()) { return BLENDMODE_ALPHA; } else return userBlendMode; }
-		inline bool IsWater() const { return _flags & WATER; }
-		inline bool HasPlanarReflection() const { return (_flags & PLANAR_REFLECTION) || IsWater(); }
+		inline BLENDMODE GetBlendMode() const { if (userBlendMode == BLENDMODE_OPAQUE && (GetRenderTypes() & RENDERTYPE_TRANSPARENT)) return BLENDMODE_ALPHA; else return userBlendMode; }
 		inline bool IsCastingShadow() const { return _flags & CAST_SHADOW; }
 		inline bool IsAlphaTestEnabled() const { return alphaRef <= 1.0f - 1.0f / 256.0f; }
-		inline bool IsFlipNormalMap() const { return _flags & FLIP_NORMALMAP; }
 		inline bool IsUsingVertexColors() const { return _flags & USE_VERTEXCOLORS; }
 		inline bool IsUsingWind() const { return _flags & USE_WIND; }
+		inline bool IsReceiveShadow() const { return (_flags & DISABLE_RECEIVE_SHADOW) == 0; }
 		inline bool IsUsingSpecularGlossinessWorkflow() const { return _flags & SPECULAR_GLOSSINESS_WORKFLOW; }
 		inline bool IsOcclusionEnabled_Primary() const { return _flags & OCCLUSION_PRIMARY; }
 		inline bool IsOcclusionEnabled_Secondary() const { return _flags & OCCLUSION_SECONDARY; }
 		inline bool IsCustomShader() const { return customShaderID >= 0; }
 
 		inline void SetBaseColor(const XMFLOAT4& value) { SetDirty(); baseColor = value; }
+		inline void SetSpecularColor(const XMFLOAT4& value) { SetDirty(); specularColor = value; }
 		inline void SetEmissiveColor(const XMFLOAT4& value) { SetDirty(); emissiveColor = value; }
 		inline void SetRoughness(float value) { SetDirty(); roughness = value; }
 		inline void SetReflectance(float value) { SetDirty(); reflectance = value; }
 		inline void SetMetalness(float value) { SetDirty(); metalness = value; }
 		inline void SetEmissiveStrength(float value) { SetDirty(); emissiveColor.w = value; }
-		inline void SetRefractionIndex(float value) { SetDirty(); refractionIndex = value; }
-		inline void SetSubsurfaceScattering(float value) { SetDirty(); subsurfaceScattering = value; }
+		inline void SetTransmissionAmount(float value) { SetDirty(); transmission = value; }
+		inline void SetRefractionAmount(float value) { SetDirty(); refraction = value; }
 		inline void SetNormalMapStrength(float value) { SetDirty(); normalMapStrength = value; }
 		inline void SetParallaxOcclusionMapping(float value) { SetDirty(); parallaxOcclusionMapping = value; }
 		inline void SetDisplacementMapping(float value) { SetDirty(); displacementMapping = value; }
+		inline void SetSubsurfaceScatteringColor(XMFLOAT3 value)
+		{
+			SetDirty();
+			subsurfaceScattering.x = value.x;
+			subsurfaceScattering.y = value.y;
+			subsurfaceScattering.z = value.z;
+		}
+		inline void SetSubsurfaceScatteringAmount(float value) { SetDirty(); subsurfaceScattering.w = value; }
 		inline void SetOpacity(float value) { SetDirty(); baseColor.w = value; }
 		inline void SetAlphaRef(float value) { SetDirty();  alphaRef = value; }
-		inline void SetFlipNormalMap(bool value) { SetDirty(); if (value) { _flags |= FLIP_NORMALMAP; } else { _flags &= ~FLIP_NORMALMAP; } }
 		inline void SetUseVertexColors(bool value) { SetDirty(); if (value) { _flags |= USE_VERTEXCOLORS; } else { _flags &= ~USE_VERTEXCOLORS; } }
 		inline void SetUseWind(bool value) { SetDirty(); if (value) { _flags |= USE_WIND; } else { _flags &= ~USE_WIND; } }
 		inline void SetUseSpecularGlossinessWorkflow(bool value) { SetDirty(); if (value) { _flags |= SPECULAR_GLOSSINESS_WORKFLOW; } else { _flags &= ~SPECULAR_GLOSSINESS_WORKFLOW; }  }
+		inline void SetSheenColor(const XMFLOAT3& value)
+		{
+			sheenColor = XMFLOAT4(value.x, value.y, value.z, sheenColor.w);
+			SetDirty();
+		}
+		inline void SetSheenRoughness(float value) { sheenRoughness = value; SetDirty(); }
+		inline void SetClearcoatFactor(float value) { clearcoat = value; SetDirty(); }
+		inline void SetClearcoatRoughness(float value) { clearcoatRoughness = value; SetDirty(); }
 		inline void SetCustomShaderID(int id) { customShaderID = id; }
 		inline void DisableCustomShader() { customShaderID = -1; }
-		inline void SetUVSet_BaseColorMap(uint32_t value) { uvset_baseColorMap = value; SetDirty(); }
-		inline void SetUVSet_NormalMap(uint32_t value) { uvset_normalMap = value; SetDirty(); }
-		inline void SetUVSet_SurfaceMap(uint32_t value) { uvset_surfaceMap = value; SetDirty(); }
-		inline void SetUVSet_DisplacementMap(uint32_t value) { uvset_displacementMap = value; SetDirty(); }
-		inline void SetUVSet_EmissiveMap(uint32_t value) { uvset_emissiveMap = value; SetDirty(); }
-		inline void SetUVSet_OcclusionMap(uint32_t value) { uvset_occlusionMap = value; SetDirty(); }
 
-		ShaderMaterial CreateShaderMaterial() const;
+		// The MaterialComponent will be written to ShaderMaterial (a struct that is optimized for GPU use)
+		void WriteShaderMaterial(ShaderMaterial* dest) const;
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		// Retrieve the array of textures from the material
+		void WriteTextures(const wiGraphics::GPUResource** dest, int count) const;
+
+		// Returns the bitwise OR of all the RENDERTYPE flags applicable to this material
+		uint32_t GetRenderTypes() const;
+
+		// Create constant buffer and texture resources for GPU
+		void CreateRenderData();
+
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct MeshComponent
@@ -252,11 +314,15 @@ namespace wiScene
 			DOUBLE_SIDED = 1 << 1,
 			DYNAMIC = 1 << 2,
 			TERRAIN = 1 << 3,
+			DIRTY_MORPH = 1 << 4,
+			DIRTY_BINDLESS = 1 << 5,
+			DIRTY_BLAS = 1 << 6,
 		};
 		uint32_t _flags = RENDERABLE;
 
 		std::vector<XMFLOAT3> vertex_positions;
 		std::vector<XMFLOAT3> vertex_normals;
+		std::vector<XMFLOAT4> vertex_tangents;
 		std::vector<XMFLOAT2> vertex_uvset_0;
 		std::vector<XMFLOAT2> vertex_uvset_1;
 		std::vector<XMUINT4> vertex_boneindices;
@@ -272,7 +338,7 @@ namespace wiScene
 			uint32_t indexOffset = 0;
 			uint32_t indexCount = 0;
 		};
-		std::vector<MeshSubset>		subsets;
+		std::vector<MeshSubset> subsets;
 
 		float tessellationFactor = 0.0f;
 		wiECS::Entity armatureID = wiECS::INVALID_ENTITY;
@@ -286,10 +352,20 @@ namespace wiScene
 		wiECS::Entity terrain_material2 = wiECS::INVALID_ENTITY;
 		wiECS::Entity terrain_material3 = wiECS::INVALID_ENTITY;
 
+		// Morph Targets
+		struct MeshMorphTarget
+		{
+		    std::vector<XMFLOAT3> vertex_positions;
+		    std::vector<XMFLOAT3> vertex_normals;
+		    float_t weight;
+		};
+		std::vector<MeshMorphTarget> targets;
+
 		// Non-serialized attributes:
 		AABB aabb;
 		wiGraphics::GPUBuffer indexBuffer;
 		wiGraphics::GPUBuffer vertexBuffer_POS;
+		wiGraphics::GPUBuffer vertexBuffer_TAN;
 		wiGraphics::GPUBuffer vertexBuffer_UV0;
 		wiGraphics::GPUBuffer vertexBuffer_UV1;
 		wiGraphics::GPUBuffer vertexBuffer_BON;
@@ -297,25 +373,42 @@ namespace wiScene
 		wiGraphics::GPUBuffer vertexBuffer_ATL;
 		wiGraphics::GPUBuffer vertexBuffer_PRE;
 		wiGraphics::GPUBuffer streamoutBuffer_POS;
+		wiGraphics::GPUBuffer streamoutBuffer_TAN;
 		wiGraphics::GPUBuffer vertexBuffer_SUB;
 		std::vector<uint8_t> vertex_subsets;
+		wiGraphics::GPUBuffer descriptor;
+		wiGraphics::GPUBuffer subsetBuffer;
 
+		wiGraphics::RaytracingAccelerationStructure BLAS;
+
+		// Only valid for 1 frame material component indices:
+		int terrain_material1_index = -1;
+		int terrain_material2_index = -1;
+		int terrain_material3_index = -1;
+
+		std::vector<ShaderMeshSubset> shadersubsets;
 
 		inline void SetRenderable(bool value) { if (value) { _flags |= RENDERABLE; } else { _flags &= ~RENDERABLE; } }
 		inline void SetDoubleSided(bool value) { if (value) { _flags |= DOUBLE_SIDED; } else { _flags &= ~DOUBLE_SIDED; } }
 		inline void SetDynamic(bool value) { if (value) { _flags |= DYNAMIC; } else { _flags &= ~DYNAMIC; } }
 		inline void SetTerrain(bool value) { if (value) { _flags |= TERRAIN; } else { _flags &= ~TERRAIN; } }
+		inline void SetDirtyMorph(bool value = true) { if (value) { _flags |= DIRTY_MORPH; } else { _flags &= ~DIRTY_MORPH; } }
 
 		inline bool IsRenderable() const { return _flags & RENDERABLE; }
 		inline bool IsDoubleSided() const { return _flags & DOUBLE_SIDED; }
 		inline bool IsDynamic() const { return _flags & DYNAMIC; }
 		inline bool IsTerrain() const { return _flags & TERRAIN; }
+		inline bool IsDirtyMorph() const { return _flags & DIRTY_MORPH; }
 
 		inline float GetTessellationFactor() const { return tessellationFactor; }
 		inline wiGraphics::INDEXBUFFER_FORMAT GetIndexFormat() const { return vertex_positions.size() > 65535 ? wiGraphics::INDEXFORMAT_32BIT : wiGraphics::INDEXFORMAT_16BIT; }
+		inline size_t GetIndexStride() const { return GetIndexFormat() == wiGraphics::INDEXFORMAT_32BIT ? sizeof(uint32_t) : sizeof(uint16_t); }
 		inline bool IsSkinned() const { return armatureID != wiECS::INVALID_ENTITY; }
 
+		// Recreates GPU resources for index/vertex buffers
 		void CreateRenderData();
+		void WriteShaderMesh(ShaderMesh* dest) const;
+
 		enum COMPUTE_NORMALS
 		{
 			COMPUTE_NORMALS_HARD,		// hard face normals, can result in additional vertices generated
@@ -329,7 +422,7 @@ namespace wiScene
 		void RecenterToBottom();
 		SPHERE GetBoundingSphere() const;
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 
 
 		struct Vertex_POS
@@ -350,7 +443,8 @@ namespace wiScene
 			}
 			inline XMVECTOR LoadNOR() const
 			{
-				return XMLoadFloat3(&GetNor_FULL());
+				XMFLOAT3 N = GetNor_FULL();
+				return XMLoadFloat3(&N);
 			}
 			inline void MakeFromParams(const XMFLOAT3& normal)
 			{
@@ -445,6 +539,29 @@ namespace wiScene
 			uint32_t color = 0;
 			static const wiGraphics::FORMAT FORMAT = wiGraphics::FORMAT::FORMAT_R8G8B8A8_UNORM;
 		};
+		struct Vertex_TAN
+		{
+			uint32_t tangent = 0;
+
+			void FromFULL(const XMFLOAT4& tan)
+			{
+				XMVECTOR T = XMLoadFloat4(&tan);
+				T = XMVector3Normalize(T);
+				XMFLOAT4 t;
+				XMStoreFloat4(&t, T);
+				t.w = tan.w;
+				tangent = 0;
+				tangent |= (uint)((t.x * 0.5f + 0.5f) * 255.0f) << 0;
+				tangent |= (uint)((t.y * 0.5f + 0.5f) * 255.0f) << 8;
+				tangent |= (uint)((t.z * 0.5f + 0.5f) * 255.0f) << 16;
+				tangent |= (uint)((t.w * 0.5f + 0.5f) * 255.0f) << 24;
+			}
+
+			static const wiGraphics::FORMAT FORMAT = wiGraphics::FORMAT::FORMAT_R8G8B8A8_UNORM;
+		};
+		
+		// Non serialized attributes:
+		std::vector<Vertex_POS> vertex_positions_morphed;
 
 	};
 
@@ -468,7 +585,7 @@ namespace wiScene
 		inline void SetDirty(bool value = true) { if (value) { _flags |= DIRTY; } else { _flags &= ~DIRTY; } }
 		inline bool IsDirty() const { return _flags & DIRTY; }
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct ObjectComponent
@@ -489,6 +606,7 @@ namespace wiScene
 		uint32_t cascadeMask = 0; // which shadow cascades to skip (0: skip none, 1: skip first, etc...)
 		uint32_t rendertypeMask = 0;
 		XMFLOAT4 color = XMFLOAT4(1, 1, 1, 1);
+		XMFLOAT4 emissiveColor = XMFLOAT4(1, 1, 1, 1);
 
 		uint32_t lightmapWidth = 0;
 		uint32_t lightmapHeight = 0;
@@ -514,8 +632,7 @@ namespace wiScene
 
 		// occlusion result history bitfield (32 bit->32 frame history)
 		uint32_t occlusionHistory = ~0;
-		// occlusion query pool index
-		int occlusionQueryID = -1;
+		int occlusionQueries[wiGraphics::GraphicsDevice::GetBackBufferCount() + 1] = {-1,-1,-1};
 
 		inline bool IsOccluded() const
 		{
@@ -523,7 +640,7 @@ namespace wiScene
 			// If it is visible in any frames in the history, it is determined visible in this frame
 			// But if all queries failed in the history, it is occluded.
 			// If it pops up for a frame after occluded, it is visible again for some frames
-			return ((occlusionQueryID >= 0) && (occlusionHistory & 0xFFFFFFFF) == 0);
+			return occlusionHistory == 0;
 		}
 
 		inline void SetRenderable(bool value) { if (value) { _flags |= RENDERABLE; } else { _flags &= ~RENDERABLE; } }
@@ -555,7 +672,7 @@ namespace wiScene
 		void SaveLightmap();
 		wiGraphics::FORMAT GetLightmapFormat();
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct RigidBodyPhysicsComponent
@@ -579,9 +696,24 @@ namespace wiScene
 		};
 		CollisionShape shape;
 		float mass = 1.0f;
-		float friction = 1.0f;
-		float restitution = 1.0f;
-		float damping = 1.0f;
+		float friction = 0.5f;
+		float restitution = 0.0f;
+		float damping_linear = 0.0f;
+		float damping_angular = 0.0f;
+
+		struct BoxParams
+		{
+			XMFLOAT3 halfextents = XMFLOAT3(1, 1, 1);
+		} box;
+		struct SphereParams
+		{
+			float radius = 1;
+		} sphere;
+		struct CapsuleParams
+		{
+			float radius = 1;
+			float height = 1;
+		} capsule;
 
 		// Non-serialized attributes:
 		void* physicsobject = nullptr;
@@ -592,7 +724,7 @@ namespace wiScene
 		inline bool IsDisableDeactivation() const { return _flags & DISABLE_DEACTIVATION; }
 		inline bool IsKinematic() const { return _flags & KINEMATIC; }
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct SoftBodyPhysicsComponent
@@ -607,7 +739,8 @@ namespace wiScene
 		uint32_t _flags = DISABLE_DEACTIVATION;
 
 		float mass = 1.0f;
-		float friction = 1.0f;
+		float friction = 0.5f;
+		float restitution = 0.0f;
 		std::vector<uint32_t> physicsToGraphicsVertexMapping; // maps graphics vertex index to physics vertex index of the same position
 		std::vector<uint32_t> graphicsToPhysicsVertexMapping; // maps a physics vertex index to first graphics vertex index of the same position
 		std::vector<float> weights; // weight per physics vertex controlling the mass. (0: disable weight (no physics, only animation), 1: default weight)
@@ -616,6 +749,8 @@ namespace wiScene
 		void* physicsobject = nullptr;
 		XMFLOAT4X4 worldMatrix = IDENTITYMATRIX;
 		std::vector<MeshComponent::Vertex_POS> vertex_positions_simulation; // graphics vertices after simulation (world space)
+		std::vector<XMFLOAT4>vertex_tangents_tmp;
+		std::vector<MeshComponent::Vertex_TAN> vertex_tangents_simulation;
 		AABB aabb;
 
 		inline void SetDisableDeactivation(bool value) { if (value) { _flags |= DISABLE_DEACTIVATION; } else { _flags &= ~DISABLE_DEACTIVATION; } }
@@ -625,7 +760,7 @@ namespace wiScene
 		// Create physics represenation of graphics mesh
 		void CreateFromMesh(const MeshComponent& mesh);
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct ArmatureComponent
@@ -669,7 +804,9 @@ namespace wiScene
 		std::vector<ShaderBoneType> boneData;
 		wiGraphics::GPUBuffer boneBuffer;
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void CreateRenderData();
+
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct LightComponent
@@ -690,10 +827,10 @@ namespace wiScene
 			DIRECTIONAL = ENTITY_TYPE_DIRECTIONALLIGHT,
 			POINT = ENTITY_TYPE_POINTLIGHT,
 			SPOT = ENTITY_TYPE_SPOTLIGHT,
-			SPHERE = ENTITY_TYPE_SPHERELIGHT,
-			DISC = ENTITY_TYPE_DISCLIGHT,
-			RECTANGLE = ENTITY_TYPE_RECTANGLELIGHT,
-			TUBE = ENTITY_TYPE_TUBELIGHT,
+			//SPHERE = ENTITY_TYPE_SPHERELIGHT,
+			//DISC = ENTITY_TYPE_DISCLIGHT,
+			//RECTANGLE = ENTITY_TYPE_RECTANGLELIGHT,
+			//TUBE = ENTITY_TYPE_TUBELIGHT,
 			LIGHTTYPE_COUNT,
 			ENUM_FORCE_UINT32 = 0xFFFFFFFF,
 		};
@@ -701,10 +838,6 @@ namespace wiScene
 		float energy = 1.0f;
 		float range_local = 10.0f;
 		float fov = XM_PIDIV4;
-		float shadowBias = 0.0001f;
-		float radius = 1.0f; // area light
-		float width = 1.0f;  // area light
-		float height = 1.0f; // area light
 
 		std::vector<std::string> lensFlareNames;
 
@@ -716,7 +849,6 @@ namespace wiScene
 		XMFLOAT3 scale;
 		XMFLOAT3 front;
 		XMFLOAT3 right;
-		int shadowMap_index = -1;
 
 		std::vector<std::shared_ptr<wiResource>> lensFlareRimTextures;
 
@@ -732,12 +864,10 @@ namespace wiScene
 
 		inline float GetRange() const { return range_global; }
 
-		inline void SetType(LightType val) {
-			type = val;
-		}
+		inline void SetType(LightType val) { type = val; }
 		inline LightType GetType() const { return type; }
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct CameraComponent
@@ -752,7 +882,7 @@ namespace wiScene
 
 		float width = 0.0f;
 		float height = 0.0f;
-		float zNearP = 0.001f;
+		float zNearP = 0.1f;
 		float zFarP = 800.0f;
 		float fov = XM_PI / 3.0f;
 
@@ -765,6 +895,7 @@ namespace wiScene
 		Frustum frustum;
 		XMFLOAT4X4 InvView, InvProjection, InvVP;
 		XMFLOAT2 jitter;
+		XMFLOAT4 clipPlane = XMFLOAT4(0, 0, 0, 0); // default: no clip plane
 
 		void CreatePerspective(float newWidth, float newHeight, float newNear, float newFar, float newFOV = XM_PI / 3.0f);
 		void UpdateCamera();
@@ -787,7 +918,7 @@ namespace wiScene
 		inline bool IsDirty() const { return _flags & DIRTY; }
 		inline bool IsCustomProjectionEnabled() const { return _flags & CUSTOM_PROJECTION; }
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct EnvironmentProbeComponent
@@ -812,7 +943,7 @@ namespace wiScene
 		inline bool IsDirty() const { return _flags & DIRTY; }
 		inline bool IsRealTime() const { return _flags & REALTIME; }
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct ForceFieldComponent
@@ -834,7 +965,7 @@ namespace wiScene
 
 		inline float GetRange() const { return range_global; }
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct DecalComponent
@@ -859,7 +990,21 @@ namespace wiScene
 
 		inline float GetOpacity() const { return color.w; }
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
+	};
+
+	struct AnimationDataComponent
+	{
+		enum FLAGS
+		{
+			EMPTY = 0,
+		};
+		uint32_t _flags = EMPTY;
+
+		std::vector<float> keyframe_times;
+		std::vector<float> keyframe_data;
+
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct AnimationComponent
@@ -874,7 +1019,8 @@ namespace wiScene
 		float start = 0;
 		float end = 0;
 		float timer = 0;
-		float amount = 1;
+		float amount = 1;	// blend amount
+		float speed = 1;
 
 		struct AnimationChannel
 		{
@@ -882,19 +1028,20 @@ namespace wiScene
 			{
 				EMPTY = 0,
 			};
-			uint32_t _flags = EMPTY;
+			uint32_t _flags = LOOPED;
+
+			wiECS::Entity target = wiECS::INVALID_ENTITY;
+			int samplerIndex = -1;
 
 			enum Path
 			{
 				TRANSLATION,
 				ROTATION,
 				SCALE,
+				WEIGHTS,
 				UNKNOWN,
 				TYPE_FORCE_UINT32 = 0xFFFFFFFF
 			} path = TRANSLATION;
-
-			wiECS::Entity target = wiECS::INVALID_ENTITY;
-			uint32_t samplerIndex = 0;
 		};
 		struct AnimationSampler
 		{
@@ -902,21 +1049,26 @@ namespace wiScene
 			{
 				EMPTY = 0,
 			};
-			uint32_t _flags = EMPTY;
+			uint32_t _flags = LOOPED;
+
+			wiECS::Entity data = wiECS::INVALID_ENTITY;
 
 			enum Mode
 			{
 				LINEAR,
 				STEP,
+				CUBICSPLINE,
 				MODE_FORCE_UINT32 = 0xFFFFFFFF
 			} mode = LINEAR;
 
-			std::vector<float> keyframe_times;
-			std::vector<float> keyframe_data;
+			// The data is now not part of the sampler, so it can be shared. This is kept only for backwards compatibility with previous versions.
+			AnimationDataComponent backwards_compatibility_data;
 		};
-
 		std::vector<AnimationChannel> channels;
 		std::vector<AnimationSampler> samplers;
+
+		// Non-serialzied attributes:
+		std::vector<float> morph_weights_temp;
 
 		inline bool IsPlaying() const { return _flags & PLAYING; }
 		inline bool IsLooped() const { return _flags & LOOPED; }
@@ -928,7 +1080,7 @@ namespace wiScene
 		inline void Stop() { Pause(); timer = 0.0f; }
 		inline void SetLooped(bool value = true) { if (value) { _flags |= LOOPED; } else { _flags &= ~LOOPED; } }
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct WeatherComponent
@@ -938,17 +1090,21 @@ namespace wiScene
 			EMPTY = 0,
 			OCEAN_ENABLED = 1 << 0,
 			SIMPLE_SKY = 1 << 1,
+			REALISTIC_SKY = 1 << 2,
 		};
 		uint32_t _flags = EMPTY;
 
 		inline bool IsOceanEnabled() const { return _flags & OCEAN_ENABLED; }
 		inline bool IsSimpleSky() const { return _flags & SIMPLE_SKY; }
+		inline bool IsRealisticSky() const { return _flags & REALISTIC_SKY; }
 
 		inline void SetOceanEnabled(bool value = true) { if (value) { _flags |= OCEAN_ENABLED; } else { _flags &= ~OCEAN_ENABLED; } }
 		inline void SetSimpleSky(bool value = true) { if (value) { _flags |= SIMPLE_SKY; } else { _flags &= ~SIMPLE_SKY; } }
+		inline void SetRealisticSky(bool value = true) { if (value) { _flags |= REALISTIC_SKY; } else { _flags &= ~REALISTIC_SKY; } }
 
 		XMFLOAT3 sunColor = XMFLOAT3(0, 0, 0);
 		XMFLOAT3 sunDirection = XMFLOAT3(0, 1, 0);
+		float sunEnergy = 0;
 		XMFLOAT3 horizon = XMFLOAT3(0.0f, 0.0f, 0.0f);
 		XMFLOAT3 zenith = XMFLOAT3(0.0f, 0.0f, 0.0f);
 		XMFLOAT3 ambient = XMFLOAT3(0.2f, 0.2f, 0.2f);
@@ -993,9 +1149,14 @@ namespace wiScene
 		OceanParameters oceanParameters;
 
 		std::string skyMapName;
-		std::shared_ptr<wiResource> skyMap;
+		std::string colorGradingMapName;
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		// Non-serialized attributes:
+		uint32_t most_important_light_index = ~0;
+		std::shared_ptr<wiResource> skyMap;
+		std::shared_ptr<wiResource> colorGradingMap;
+
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct SoundComponent
@@ -1005,6 +1166,7 @@ namespace wiScene
 			EMPTY = 0,
 			PLAYING = 1 << 0,
 			LOOPED = 1 << 1,
+			DISABLE_3D = 1 << 2,
 		};
 		uint32_t _flags = LOOPED;
 
@@ -1015,12 +1177,16 @@ namespace wiScene
 
 		inline bool IsPlaying() const { return _flags & PLAYING; }
 		inline bool IsLooped() const { return _flags & LOOPED; }
+		inline bool IsDisable3D() const { return _flags & DISABLE_3D; }
 
 		inline void Play() { _flags |= PLAYING; }
 		inline void Stop() { _flags &= ~PLAYING; }
 		inline void SetLooped(bool value = true) { if (value) { _flags |= LOOPED; } else { _flags &= ~LOOPED; } }
+		inline void SetDisable3D(bool value = true) { if (value) { _flags |= DISABLE_3D; } else { _flags &= ~DISABLE_3D; } }
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void LoadAssets(const std::string& content_dir = "");
+
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct InverseKinematicsComponent
@@ -1039,7 +1205,7 @@ namespace wiScene
 		inline void SetDisabled(bool value = true) { if (value) { _flags |= DISABLED; } else { _flags &= ~DISABLED; } }
 		inline bool IsDisabled() const { return _flags & DISABLED; }
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct SpringComponent
@@ -1072,7 +1238,7 @@ namespace wiScene
 		inline bool IsStretchEnabled() const { return _flags & STRETCH_ENABLED; }
 		inline bool IsGravityEnabled() const { return _flags & GRAVITY_ENABLED; }
 
-		void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+		void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 	};
 
 	struct Scene
@@ -1099,6 +1265,7 @@ namespace wiScene
 		wiECS::ComponentManager<DecalComponent> decals;
 		wiECS::ComponentManager<AABB> aabb_decals;
 		wiECS::ComponentManager<AnimationComponent> animations;
+		wiECS::ComponentManager<AnimationDataComponent> animation_datas;
 		wiECS::ComponentManager<wiEmittedParticle> emitters;
 		wiECS::ComponentManager<wiHairParticle> hairs;
 		wiECS::ComponentManager<WeatherComponent> weathers;
@@ -1107,15 +1274,38 @@ namespace wiScene
 		wiECS::ComponentManager<SpringComponent> springs;
 
 		// Non-serialized attributes:
+		float dt = 0;
+		enum FLAGS
+		{
+			EMPTY = 0,
+			UPDATE_ACCELERATION_STRUCTURES = 1 << 0,
+		};
+		uint32_t flags = EMPTY;
+
+		wiSpinLock locker;
 		AABB bounds;
-		XMFLOAT4 waterPlane = XMFLOAT4(0, 1, 0, 0);
+		std::vector<AABB> parallel_bounds;
 		WeatherComponent weather;
+		wiGraphics::RaytracingAccelerationStructure TLAS;
+		std::vector<uint8_t> TLAS_instances;
+		std::vector<wiECS::Entity> BLAS_builds;
+
+		std::mutex cmd_locker;
+		wiGraphics::CommandList cmd = wiGraphics::INVALID_COMMANDLIST; // for gpu data updates
+
+		wiGraphics::GPUQueryHeap queryHeap[arraysize(ObjectComponent::occlusionQueries)];
+		std::vector<uint64_t> queryResults;
+		uint32_t writtenQueries[arraysize(queryHeap)] = {};
+		int queryheap_idx = 0;
+		std::atomic<uint32_t> queryAllocator{ 0 };
 
 		// Update all components by a given timestep (in seconds):
+		//	This is an expensive function, prefer to call it only once per frame!
 		void Update(float dt);
 		// Remove everything from the scene that it owns:
 		void Clear();
-		// Merge with an other scene.
+		// Merge an other scene into this.
+		//	The contents of the other scene will be lost (and moved to this)!
 		void Merge(Scene& other);
 
 		// Removes a specific entity from the scene (if it exists):
@@ -1125,11 +1315,8 @@ namespace wiScene
 		// Duplicates all of an entity's components and creates a new entity with them:
 		wiECS::Entity Entity_Duplicate(wiECS::Entity entity);
 		// Serializes entity and all of its components to archive:
-		//	You can specify entity = INVALID_ENTITY when the entity needs to be created from archive
-		//	You can specify seed = INVALID_ENTITY when the archive is guaranteed to be storing persistent and unique entities
-		//	propagateDeepSeed : request that entity references inside components should be seeded as well
 		//	Returns either the new entity that was read, or the original entity that was written
-		wiECS::Entity Entity_Serialize(wiArchive& archive, wiECS::Entity entity = wiECS::INVALID_ENTITY, wiECS::Entity seed = wiECS::INVALID_ENTITY, bool propagateSeedDeep = true);
+		wiECS::Entity Entity_Serialize(wiArchive& archive, wiECS::Entity entity = wiECS::INVALID_ENTITY);
 
 		wiECS::Entity Entity_CreateMaterial(
 			const std::string& name
@@ -1145,7 +1332,8 @@ namespace wiScene
 			const XMFLOAT3& position = XMFLOAT3(0, 0, 0), 
 			const XMFLOAT3& color = XMFLOAT3(1, 1, 1), 
 			float energy = 1, 
-			float range = 10
+			float range = 10,
+			LightComponent::LightType type = LightComponent::POINT
 		);
 		wiECS::Entity Entity_CreateForce(
 			const std::string& name,
@@ -1187,118 +1375,27 @@ namespace wiScene
 		void Component_DetachChildren(wiECS::Entity parent);
 
 		void Serialize(wiArchive& archive);
-	};
 
-	void RunPreviousFrameTransformUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<TransformComponent>& transforms,
-		wiECS::ComponentManager<PreviousFrameTransformComponent>& prev_transforms
-	);
-	void RunAnimationUpdateSystem(
-		wiJobSystem::context& ctx,
-		wiECS::ComponentManager<AnimationComponent>& animations,
-		wiECS::ComponentManager<TransformComponent>& transforms,
-		float dt
-	);
-	void RunTransformUpdateSystem(
-		wiJobSystem::context& ctx, 
-		wiECS::ComponentManager<TransformComponent>& transforms
-	);
-	void RunHierarchyUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<HierarchyComponent>& hierarchy,
-		wiECS::ComponentManager<TransformComponent>& transforms,
-		wiECS::ComponentManager<LayerComponent>& layers
-	);
-	void RunSpringUpdateSystem(
-		wiJobSystem::context& ctx,
-		const WeatherComponent& weather,
-		const wiECS::ComponentManager<HierarchyComponent>& hierarchy,
-		wiECS::ComponentManager<TransformComponent>& transforms,
-		wiECS::ComponentManager<SpringComponent>& springs,
-		float dt
-	);
-	void RunInverseKinematicsUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<InverseKinematicsComponent>& inverse_kinematics,
-		const wiECS::ComponentManager<HierarchyComponent>& hierarchy,
-		wiECS::ComponentManager<TransformComponent>& transforms
-	);
-	void RunArmatureUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<TransformComponent>& transforms,
-		wiECS::ComponentManager<ArmatureComponent>& armatures
-	);
-	void RunMaterialUpdateSystem(
-		wiJobSystem::context& ctx, 
-		wiECS::ComponentManager<MaterialComponent>& materials, float dt
-	);
-	void RunImpostorUpdateSystem(
-		wiJobSystem::context& ctx, 
-		wiECS::ComponentManager<ImpostorComponent>& impostors
-	);
-	void RunObjectUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<PreviousFrameTransformComponent>& prev_transforms,
-		const wiECS::ComponentManager<TransformComponent>& transforms,
-		const wiECS::ComponentManager<MeshComponent>& meshes,
-		const wiECS::ComponentManager<MaterialComponent>& materials,
-		const wiECS::ComponentManager<ArmatureComponent>& armatures,
-		wiECS::ComponentManager<ObjectComponent>& objects,
-		wiECS::ComponentManager<AABB>& aabb_objects,
-		wiECS::ComponentManager<ImpostorComponent>& impostors,
-		wiECS::ComponentManager<SoftBodyPhysicsComponent>& softbodies,
-		AABB& sceneBounds,
-		XMFLOAT4& waterPlane
-	);
-	void RunCameraUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<TransformComponent>& transforms,
-		wiECS::ComponentManager<CameraComponent>& cameras
-	);
-	void RunDecalUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<TransformComponent>& transforms,
-		const wiECS::ComponentManager<MaterialComponent>& materials,
-		wiECS::ComponentManager<AABB>& aabb_decals,
-		wiECS::ComponentManager<DecalComponent>& decals
-	);
-	void RunProbeUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<TransformComponent>& transforms,
-		wiECS::ComponentManager<AABB>& aabb_probes,
-		wiECS::ComponentManager<EnvironmentProbeComponent>& probes
-	);
-	void RunForceUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<TransformComponent>& transforms,
-		wiECS::ComponentManager<ForceFieldComponent>& forces
-	);
-	void RunLightUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<TransformComponent>& transforms,
-		wiECS::ComponentManager<AABB>& aabb_lights,
-		wiECS::ComponentManager<LightComponent>& lights
-	);
-	void RunParticleUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<TransformComponent>& transforms,
-		const wiECS::ComponentManager<MeshComponent>& meshes,
-		wiECS::ComponentManager<wiEmittedParticle>& emitters,
-		wiECS::ComponentManager<wiHairParticle>& hairs,
-		float dt
-	);
-	void RunWeatherUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<WeatherComponent>& weathers,
-		const wiECS::ComponentManager<LightComponent>& lights,
-		WeatherComponent& weather
-	);
-	void RunSoundUpdateSystem(
-		wiJobSystem::context& ctx,
-		const wiECS::ComponentManager<TransformComponent>& transforms,
-		wiECS::ComponentManager<SoundComponent>& sounds
-	);
+		void RunPreviousFrameTransformUpdateSystem(wiJobSystem::context& ctx);
+		void RunAnimationUpdateSystem(wiJobSystem::context& ctx);
+		void RunTransformUpdateSystem(wiJobSystem::context& ctx);
+		void RunHierarchyUpdateSystem(wiJobSystem::context& ctx);
+		void RunSpringUpdateSystem(wiJobSystem::context& ctx);
+		void RunInverseKinematicsUpdateSystem(wiJobSystem::context& ctx);
+		void RunArmatureUpdateSystem(wiJobSystem::context& ctx);
+		void RunMeshUpdateSystem(wiJobSystem::context& ctx);
+		void RunMaterialUpdateSystem(wiJobSystem::context& ctx);
+		void RunImpostorUpdateSystem(wiJobSystem::context& ctx);
+		void RunObjectUpdateSystem(wiJobSystem::context& ctx);
+		void RunCameraUpdateSystem(wiJobSystem::context& ctx);
+		void RunDecalUpdateSystem(wiJobSystem::context& ctx);
+		void RunProbeUpdateSystem(wiJobSystem::context& ctx);
+		void RunForceUpdateSystem(wiJobSystem::context& ctx);
+		void RunLightUpdateSystem(wiJobSystem::context& ctx);
+		void RunParticleUpdateSystem(wiJobSystem::context& ctx);
+		void RunWeatherUpdateSystem(wiJobSystem::context& ctx);
+		void RunSoundUpdateSystem(wiJobSystem::context& ctx);
+	};
 
 	// Returns skinned vertex position in armature local space
 	//	N : normal (out, optional)
@@ -1310,6 +1407,13 @@ namespace wiScene
 	{
 		static Scene scene;
 		return scene;
+	}
+
+	// Helper that manages a global camera
+	inline CameraComponent& GetCamera()
+	{
+		static CameraComponent camera;
+		return camera;
 	}
 
 	// Helper function to open a wiscene file and add the contents to the global scene

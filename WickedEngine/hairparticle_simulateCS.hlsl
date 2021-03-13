@@ -3,6 +3,8 @@
 
 RWSTRUCTUREDBUFFER(particleBuffer, Patch, 0);
 RWSTRUCTUREDBUFFER(simulationBuffer, PatchSimulationData, 1);
+RWSTRUCTUREDBUFFER(indexBuffer, uint, 2);
+RWRAWBUFFER(counterBuffer, 3);
 
 TYPEDBUFFER(meshIndexBuffer, uint, TEXSLOT_ONDEMAND0);
 RAWBUFFER(meshVertexBuffer_POS, TEXSLOT_ONDEMAND1);
@@ -30,10 +32,10 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID, uint groupIn
 		ShaderEntity forceField = EntityArray[forceFieldID];
 
 		forceFields[groupIndex].type = (uint)forceField.GetType();
-		forceFields[groupIndex].position = forceField.positionWS;
-		forceFields[groupIndex].gravity = forceField.energy;
-		forceFields[groupIndex].range_rcp = forceField.range; // it is actually uploaded from CPU as 1.0f / range
-		forceFields[groupIndex].normal = forceField.directionWS;
+		forceFields[groupIndex].position = forceField.position;
+		forceFields[groupIndex].gravity = forceField.GetEnergy();
+		forceFields[groupIndex].range_rcp = forceField.GetRange(); // it is actually uploaded from CPU as 1.0f / range
+		forceFields[groupIndex].normal = forceField.GetDirection();
 	}
 	GroupMemoryBarrierWithGroupSync();
 
@@ -180,5 +182,24 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID, uint groupIn
 
 		// Offset next segment root to current tip:
         base = tip;
+
+
+		// Frustum culling:
+		float3 sphereCenter = base + tip * 0.5f;
+		float sphereRadius = length(sphereCenter - base);
+		bool infrustum = true;
+		infrustum = distance(sphereCenter, g_xCamera_CamPos.xyz) > xHairViewDistance ? false : infrustum;
+		infrustum = dot(g_xCamera_FrustumPlanes[0], float4(sphereCenter, 1)) < -sphereRadius ? false : infrustum;
+		infrustum = dot(g_xCamera_FrustumPlanes[2], float4(sphereCenter, 1)) < -sphereRadius ? false : infrustum;
+		infrustum = dot(g_xCamera_FrustumPlanes[3], float4(sphereCenter, 1)) < -sphereRadius ? false : infrustum;
+		infrustum = dot(g_xCamera_FrustumPlanes[4], float4(sphereCenter, 1)) < -sphereRadius ? false : infrustum;
+		infrustum = dot(g_xCamera_FrustumPlanes[5], float4(sphereCenter, 1)) < -sphereRadius ? false : infrustum;
+
+		if (infrustum)
+		{
+			uint prevCount;
+			counterBuffer.InterlockedAdd(0, 1, prevCount);
+			indexBuffer[prevCount] = particleID;
+		}
     }
 }

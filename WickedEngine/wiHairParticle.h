@@ -19,6 +19,8 @@ private:
 	wiGraphics::GPUBuffer cb;
 	wiGraphics::GPUBuffer particleBuffer;
 	wiGraphics::GPUBuffer simulationBuffer;
+	wiGraphics::GPUBuffer culledIndexBuffer;
+	wiGraphics::GPUBuffer indirectBuffer;
 
 	wiGraphics::GPUBuffer indexBuffer;
 	wiGraphics::GPUBuffer vertexBuffer_length;
@@ -26,7 +28,7 @@ public:
 
 	void UpdateCPU(const TransformComponent& transform, const MeshComponent& mesh, float dt);
 	void UpdateGPU(const MeshComponent& mesh, const MaterialComponent& material, wiGraphics::CommandList cmd) const;
-	void Draw(const CameraComponent& camera, const MaterialComponent& material, RENDERPASS renderPass, bool transparent, wiGraphics::CommandList cmd) const;
+	void Draw(const CameraComponent& camera, const MaterialComponent& material, RENDERPASS renderPass, wiGraphics::CommandList cmd) const;
 
 	enum FLAGS
 	{
@@ -59,9 +61,8 @@ public:
 	AABB aabb;
 	std::vector<uint32_t> indices; // it is dependent on vertex_lengths and contains triangles with non-zero lengths
 
-	void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+	void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 
-	static void LoadShaders();
 	static void Initialize();
 };
 

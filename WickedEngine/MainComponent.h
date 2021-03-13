@@ -10,7 +10,7 @@ class RenderPath;
 class MainComponent
 {
 protected:
-	RenderPath* activePath;
+	RenderPath* activePath = nullptr;
 	float targetFrameRate = 60;
 	bool frameskip = true;
 	bool framerate_lock = false;
@@ -26,7 +26,7 @@ protected:
 	int fps_avg_counter = 0;
 
 public:
-	bool fullscreen = false;
+	bool is_window_active = true;
 
 	// Runs the main engine loop
 	void Run();
@@ -61,7 +61,7 @@ public:
 	virtual void Compose(wiGraphics::CommandList cmd);
 
 	// You need to call this before calling Run() or Initialize() if you want to render
-	void SetWindow(wiPlatform::window_type);
+	void SetWindow(wiPlatform::window_type, bool fullscreen = false);
 
 
 	struct InfoDisplayer
@@ -78,6 +78,8 @@ public:
 		bool heap_allocation_counter = false;
 		// text size
 		int size = 16;
+		// display default color grading helper texture in top left corner of the screen
+		bool colorgrading_helper = false;
 	};
 	// display all-time engine information text
 	InfoDisplayer infoDisplay;

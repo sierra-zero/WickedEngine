@@ -2,27 +2,27 @@
 #include "WickedEngine.h"
 #include "Translator.h"
 
-class MaterialWindow;
-class PostprocessWindow;
-class WeatherWindow;
-class ObjectWindow;
-class MeshWindow;
-class CameraWindow;
-class RendererWindow;
-class EnvProbeWindow;
-class DecalWindow;
-class LightWindow;
-class AnimationWindow;
-class EmitterWindow;
-class HairParticleWindow;
-class ForceFieldWindow;
-class SoundWindow;
-class PaintToolWindow;
-class SpringWindow;
-class IKWindow;
-class TransformWindow;
-class LayerWindow;
-class NameWindow;
+#include "MaterialWindow.h"
+#include "PostprocessWindow.h"
+#include "WeatherWindow.h"
+#include "ObjectWindow.h"
+#include "MeshWindow.h"
+#include "CameraWindow.h"
+#include "RendererWindow.h"
+#include "EnvProbeWindow.h"
+#include "DecalWindow.h"
+#include "LightWindow.h"
+#include "AnimationWindow.h"
+#include "EmitterWindow.h"
+#include "HairParticleWindow.h"
+#include "ForceFieldWindow.h"
+#include "SoundWindow.h"
+#include "PaintToolWindow.h"
+#include "SpringWindow.h"
+#include "IKWindow.h"
+#include "TransformWindow.h"
+#include "LayerWindow.h"
+#include "NameWindow.h"
 
 class EditorLoadingScreen : public LoadingScreen
 {
@@ -32,7 +32,6 @@ private:
 public:
 	void Load() override;
 	void Update(float dt) override;
-	void Unload() override;
 };
 
 class Editor;
@@ -41,80 +40,79 @@ class EditorComponent : public RenderPath2D
 private:
 	std::shared_ptr<wiResource> pointLightTex, spotLightTex, dirLightTex, areaLightTex, decalTex, forceFieldTex, emitterTex, hairTex, cameraTex, armatureTex, soundTex;
 public:
-	std::unique_ptr<MaterialWindow>			materialWnd;
-	std::unique_ptr<PostprocessWindow>		postprocessWnd;
-	std::unique_ptr<WeatherWindow>			weatherWnd;
-	std::unique_ptr<ObjectWindow>			objectWnd;
-	std::unique_ptr<MeshWindow>				meshWnd;
-	std::unique_ptr<CameraWindow>			cameraWnd;
-	std::unique_ptr<RendererWindow>			rendererWnd;
-	std::unique_ptr<EnvProbeWindow>			envProbeWnd;
-	std::unique_ptr<DecalWindow>			decalWnd;
-	std::unique_ptr<SoundWindow>			soundWnd;
-	std::unique_ptr<LightWindow>			lightWnd;
-	std::unique_ptr<AnimationWindow>		animWnd;
-	std::unique_ptr<EmitterWindow>			emitterWnd;
-	std::unique_ptr<HairParticleWindow>		hairWnd;
-	std::unique_ptr<ForceFieldWindow>		forceFieldWnd;
-	std::unique_ptr<PaintToolWindow>		paintToolWnd;
-	std::unique_ptr<SpringWindow>			springWnd;
-	std::unique_ptr<IKWindow>				ikWnd;
-	std::unique_ptr<TransformWindow>		transformWnd;
-	std::unique_ptr<LayerWindow>			layerWnd;
-	std::unique_ptr<NameWindow>				nameWnd;
+	MaterialWindow materialWnd;
+	PostprocessWindow postprocessWnd;
+	WeatherWindow weatherWnd;
+	ObjectWindow objectWnd;
+	MeshWindow meshWnd;
+	CameraWindow cameraWnd;
+	RendererWindow rendererWnd;
+	EnvProbeWindow envProbeWnd;
+	DecalWindow decalWnd;
+	SoundWindow soundWnd;
+	LightWindow lightWnd;
+	AnimationWindow animWnd;
+	EmitterWindow emitterWnd;
+	HairParticleWindow hairWnd;
+	ForceFieldWindow forceFieldWnd;
+	PaintToolWindow paintToolWnd;
+	SpringWindow springWnd;
+	IKWindow ikWnd;
+	TransformWindow transformWnd;
+	LayerWindow layerWnd;
+	NameWindow nameWnd;
 
 	Editor* main = nullptr;
 
-	wiButton* rendererWnd_Toggle = nullptr;
-	wiButton* postprocessWnd_Toggle = nullptr;
-	wiButton* paintToolWnd_Toggle = nullptr;
-	wiButton* weatherWnd_Toggle = nullptr;
-	wiButton* objectWnd_Toggle = nullptr;
-	wiButton* meshWnd_Toggle = nullptr;
-	wiButton* materialWnd_Toggle = nullptr;
-	wiButton* cameraWnd_Toggle = nullptr;
-	wiButton* envProbeWnd_Toggle = nullptr;
-	wiButton* decalWnd_Toggle = nullptr;
-	wiButton* soundWnd_Toggle = nullptr;
-	wiButton* lightWnd_Toggle = nullptr;
-	wiButton* animWnd_Toggle = nullptr;
-	wiButton* emitterWnd_Toggle = nullptr;
-	wiButton* hairWnd_Toggle = nullptr;
-	wiButton* forceFieldWnd_Toggle = nullptr;
-	wiButton* springWnd_Toggle = nullptr;
-	wiButton* ikWnd_Toggle = nullptr;
-	wiButton* transformWnd_Toggle = nullptr;
-	wiButton* layerWnd_Toggle = nullptr;
-	wiButton* nameWnd_Toggle = nullptr;
-	wiCheckBox* translatorCheckBox = nullptr;
-	wiCheckBox* isScalatorCheckBox = nullptr;
-	wiCheckBox* isRotatorCheckBox = nullptr;
-	wiCheckBox* isTranslatorCheckBox = nullptr;
-	wiButton* saveButton = nullptr;
-	wiButton* modelButton = nullptr;
-	wiButton* scriptButton = nullptr;
-	wiButton* shaderButton = nullptr;
-	wiButton* clearButton = nullptr;
-	wiButton* helpButton = nullptr;
-	wiButton* exitButton = nullptr;
-	wiCheckBox* profilerEnabledCheckBox = nullptr;
-	wiCheckBox* physicsEnabledCheckBox = nullptr;
-	wiCheckBox* cinemaModeCheckBox = nullptr;
-	wiComboBox* renderPathComboBox = nullptr;
-	wiLabel* helpLabel = nullptr;
+	wiButton rendererWnd_Toggle;
+	wiButton postprocessWnd_Toggle;
+	wiButton paintToolWnd_Toggle;
+	wiButton weatherWnd_Toggle;
+	wiButton objectWnd_Toggle;
+	wiButton meshWnd_Toggle;
+	wiButton materialWnd_Toggle;
+	wiButton cameraWnd_Toggle;
+	wiButton envProbeWnd_Toggle;
+	wiButton decalWnd_Toggle;
+	wiButton soundWnd_Toggle;
+	wiButton lightWnd_Toggle;
+	wiButton animWnd_Toggle;
+	wiButton emitterWnd_Toggle;
+	wiButton hairWnd_Toggle;
+	wiButton forceFieldWnd_Toggle;
+	wiButton springWnd_Toggle;
+	wiButton ikWnd_Toggle;
+	wiButton transformWnd_Toggle;
+	wiButton layerWnd_Toggle;
+	wiButton nameWnd_Toggle;
+	wiCheckBox translatorCheckBox;
+	wiCheckBox isScalatorCheckBox;
+	wiCheckBox isRotatorCheckBox;
+	wiCheckBox isTranslatorCheckBox;
+	wiButton saveButton;
+	wiComboBox saveModeComboBox;
+	wiButton modelButton;
+	wiButton scriptButton;
+	wiButton shaderButton;
+	wiButton clearButton;
+	wiButton helpButton;
+	wiButton exitButton;
+	wiCheckBox profilerEnabledCheckBox;
+	wiCheckBox physicsEnabledCheckBox;
+	wiCheckBox cinemaModeCheckBox;
+	wiComboBox renderPathComboBox;
+	wiLabel helpLabel;
 
-	wiTreeList*				sceneGraphView = nullptr;
+	wiTreeList sceneGraphView;
 	std::unordered_set<wiECS::Entity> scenegraphview_added_items;
 	std::unordered_set<wiECS::Entity> scenegraphview_opened_items;
 	void PushToSceneGraphView(wiECS::Entity entity, int level);
+	void RefreshSceneGraphView();
 
 	std::unique_ptr<RenderPath3D> renderPath;
 	enum RENDERPATH
 	{
-		RENDERPATH_FORWARD,
-		RENDERPATH_DEFERRED,
-		RENDERPATH_TILEDFORWARD,
-		RENDERPATH_TILEDDEFERRED,
+		RENDERPATH_DEFAULT,
 		RENDERPATH_PATHTRACING,
 	};
 	void ChangeRenderPath(RENDERPATH path);
@@ -124,11 +122,12 @@ public:
 	void ResizeLayout() override;
 	void Load() override;
 	void Start() override;
+	void PreUpdate() override;
 	void FixedUpdate() override;
 	void Update(float dt) override;
+	void PostUpdate() override;
 	void Render() const override;
 	void Compose(wiGraphics::CommandList cmd) const override;
-	void Unload() override;
 
 
 	enum EDITORSTENCILREF
@@ -155,7 +154,6 @@ public:
 
 
 
-
 	wiArchive clipboard;
 
 	std::vector<wiArchive> history;
@@ -177,8 +175,8 @@ public:
 class Editor : public MainComponent
 {
 public:
-	std::unique_ptr<EditorComponent> renderComponent;
-	std::unique_ptr<EditorLoadingScreen> loader;
+	EditorComponent renderComponent;
+	EditorLoadingScreen loader;
 
 	void Initialize() override;
 };

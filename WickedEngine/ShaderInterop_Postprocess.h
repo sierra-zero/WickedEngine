@@ -14,6 +14,19 @@ CBUFFER(PostProcessCB, CBSLOT_RENDERER_POSTPROCESS)
 	float4 xPPParams1;
 };
 
+struct PushConstantsTonemap
+{
+	float2 xPPResolution_rcp;
+	float exposure;
+	float dither;
+	float colorgrading;
+	int texture_input;
+	int texture_input_luminance;
+	int texture_input_distortion;
+	int texture_colorgrade_lookuptable;
+	int texture_output;
+};
+
 #define lineardepth_inputresolution xPPParams0.xy
 #define lineardepth_inputresolution_rcp xPPParams0.zw
 
@@ -24,11 +37,19 @@ CBUFFER(PostProcessCB, CBSLOT_RENDERER_POSTPROCESS)
 #define ssao_samplecount xPPParams0.y
 #define ssao_power xPPParams0.z
 
+#define rtao_range ssao_range
+#define rtao_samplecount ssao_samplecount
+#define rtao_power ssao_power
+
+#define rtreflection_range ssao_range
+
 static const uint POSTPROCESS_HBAO_THREADCOUNT = 320;
 #define hbao_direction xPPParams0.xy
 #define hbao_power xPPParams0.z
 #define hbao_uv_to_view_A xPPParams1.xy
 #define hbao_uv_to_view_B xPPParams1.zw
+
+#define sss_step xPPParams0
 
 static const uint POSTPROCESS_MSAO_BLOCKSIZE = 16;
 CBUFFER(MSAOCB, CBSLOT_RENDERER_POSTPROCESS)
@@ -48,6 +69,19 @@ CBUFFER(MSAO_UPSAMPLECB, CBSLOT_RENDERER_POSTPROCESS)
 	float StepSize;
 	float kBlurTolerance;
 	float kUpsampleTolerance;
+};
+
+CBUFFER(ShadingRateClassificationCB, CBSLOT_RENDERER_POSTPROCESS)
+{
+	uint xShadingRateTileSize;
+	uint SHADING_RATE_1X1;
+	uint SHADING_RATE_1X2;
+	uint SHADING_RATE_2X1;
+
+	uint SHADING_RATE_2X2;
+	uint SHADING_RATE_2X4;
+	uint SHADING_RATE_4X2;
+	uint SHADING_RATE_4X4;
 };
 
 static const uint MOTIONBLUR_TILESIZE = 32;

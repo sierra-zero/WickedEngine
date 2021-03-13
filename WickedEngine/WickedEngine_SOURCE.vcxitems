@@ -230,10 +230,6 @@
     <ClInclude Include="$(MSBuildThisFileDirectory)BULLET\LinearMath\btVector3.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)CommonInclude.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)ConstantBufferMapping.h" />
-    <ClInclude Include="$(MSBuildThisFileDirectory)RenderPath3D_Deferred.h" />
-    <ClInclude Include="$(MSBuildThisFileDirectory)RenderPath3D_Deferred_BindLua.h" />
-    <ClInclude Include="$(MSBuildThisFileDirectory)RenderPath3D_Forward.h" />
-    <ClInclude Include="$(MSBuildThisFileDirectory)RenderPath3D_Forward_BindLua.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)ShaderInterop_BVH.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)ShaderInterop_Font.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)ShaderInterop_HairParticle.h" />
@@ -250,25 +246,33 @@
     <ClInclude Include="$(MSBuildThisFileDirectory)ShaderInterop_Ocean.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)ShaderInterop_Skinning.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)ShaderInterop_Utility.h" />
-    <ClInclude Include="$(MSBuildThisFileDirectory)ShaderInterop_Vulkan.h" />
-    <ClInclude Include="$(MSBuildThisFileDirectory)RenderPath3D_TiledDeferred.h" />
-    <ClInclude Include="$(MSBuildThisFileDirectory)RenderPath3D_TiledDeferred_BindLua.h" />
-    <ClInclude Include="$(MSBuildThisFileDirectory)RenderPath3D_TiledForward.h" />
-    <ClInclude Include="$(MSBuildThisFileDirectory)RenderPath3D_TiledForward_BindLua.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Utility\arial.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Utility\D3D12MemAlloc.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Utility\d3dx12.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Utility\DirectXCollision.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Utility\DirectXColors.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Utility\DirectXMath.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Utility\DirectXMathCommon.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Utility\DirectXPackedVector.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Utility\GLSL.std.450.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Utility\include\spirv\unified1\spirv.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Utility\replace_new.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Utility\sal.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Utility\spirv_reflect.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Utility\stb_image.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Utility\stb_image_write.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Utility\stb_truetype.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Utility\tinyddsloader.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Utility\vk_mem_alloc.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Utility\volk.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiAllocators.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiArchive.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiAudio.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiAudio_BindLua.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)wiBlueNoise.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiContainers.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiECS.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)wiEvent.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiFFTGenerator.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiGPUBVH.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiGPUSortLib.h" />
@@ -328,6 +332,7 @@
     <ClInclude Include="$(MSBuildThisFileDirectory)wiEnums.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiFadeManager.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiFont.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)wiSDLInput.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiSpriteFont_BindLua.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiGraphics.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)wiGraphicsDevice_DX11.h" />
@@ -511,20 +516,34 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)BULLET\LinearMath\btQuickprof.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)BULLET\LinearMath\btSerializer.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)BULLET\LinearMath\btVector3.cpp" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath3D_Deferred.cpp" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath3D_Deferred_BindLua.cpp" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath3D_Forward.cpp" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath3D_Forward_BindLua.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath3D_PathTracing.cpp" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath3D_TiledDeferred.cpp" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath3D_TiledDeferred_BindLua.cpp" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath3D_TiledForward.cpp" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath3D_TiledForward_BindLua.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)Utility\D3D12MemAlloc.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)Utility\spirv_reflect.c">
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">false</CompileAsWinRT>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Utility\stb_vorbis.c">
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">false</CompileAsWinRT>
+      <CompileAsWinRT Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">false</CompileAsWinRT>
+    </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)Utility\utility_common.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)wiArchive.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)wiAudio.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)wiAudio_BindLua.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)wiBlueNoise.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)wiEvent.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)wiFFTGenerator.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)wiGPUBVH.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)wiGPUSortLib.cpp" />
@@ -623,9 +642,6 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)LUA\lua.c">
       <CompileAsWinRT>false</CompileAsWinRT>
     </ClCompile>
-    <ClCompile Include="$(MSBuildThisFileDirectory)LUA\luac.c">
-      <CompileAsWinRT>false</CompileAsWinRT>
-    </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)LUA\lundump.c">
       <CompileAsWinRT>false</CompileAsWinRT>
     </ClCompile>
@@ -645,7 +661,6 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath2D_BindLua.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath3D.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath3D_BindLua.cpp" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)RenderPath_BindLua.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)SpriteAnim_BindLua.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)Texture_BindLua.cpp" />
@@ -655,6 +670,8 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)wiEmittedParticle.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)wiFadeManager.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)wiFont.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)wiNetwork_Linux.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)wiSDLInput.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)wiSpriteFont_BindLua.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)wiGraphicsDevice_DX11.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)wiGUI.cpp" />
@@ -696,22 +713,6 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)wiXInput.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <Text Include="$(MSBuildThisFileDirectory)..\features.txt">
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</DeploymentContent>
-    </Text>
-    <Text Include="$(MSBuildThisFileDirectory)..\other_licenses.txt">
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</DeploymentContent>
-    </Text>
     <Text Include="$(MSBuildThisFileDirectory)ArchiveVersionHistory.txt">
       <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">false</DeploymentContent>
       <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</DeploymentContent>
@@ -722,46 +723,11 @@
     </Text>
   </ItemGroup>
   <ItemGroup>
-    <None Include="$(MSBuildThisFileDirectory)..\appveyor.yml" />
-    <None Include="$(MSBuildThisFileDirectory)..\Documentation\ScriptingAPI-Documentation.md" />
-    <None Include="$(MSBuildThisFileDirectory)..\Documentation\WickedEngine-Documentation.md" />
-    <None Include="$(MSBuildThisFileDirectory)..\LICENSE.md">
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</DeploymentContent>
-    </None>
-    <None Include="$(MSBuildThisFileDirectory)..\README.md">
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</DeploymentContent>
-    </None>
-    <None Include="$(MSBuildThisFileDirectory)..\scripts\camera_animation_clamped.lua" />
-    <None Include="$(MSBuildThisFileDirectory)..\scripts\camera_animation_repeat.lua" />
-    <None Include="$(MSBuildThisFileDirectory)..\scripts\character_controller_tps.lua" />
-    <None Include="$(MSBuildThisFileDirectory)..\scripts\debug_draw.lua" />
-    <None Include="$(MSBuildThisFileDirectory)..\scripts\dungeon_generator.lua" />
-    <None Include="$(MSBuildThisFileDirectory)..\scripts\emitter_burst.lua" />
-    <None Include="$(MSBuildThisFileDirectory)..\scripts\fighting_game.lua" />
-    <None Include="$(MSBuildThisFileDirectory)..\scripts\move_object.lua" />
-    <None Include="$(MSBuildThisFileDirectory)..\scripts\pick.lua" />
-    <None Include="$(MSBuildThisFileDirectory)..\scripts\rotate_model.lua" />
-    <None Include="$(MSBuildThisFileDirectory)..\scripts\set_material_color.lua" />
-    <None Include="$(MSBuildThisFileDirectory)..\scripts\set_material_emissive.lua" />
-  </ItemGroup>
-  <ItemGroup>
-    <Font Include="$(MSBuildThisFileDirectory)fonts\arial.ttf">
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">false</DeploymentContent>
-      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</DeploymentContent>
-    </Font>
+    <None Include="$(MSBuildThisFileDirectory)Utility\DirectXCollision.inl" />
+    <None Include="$(MSBuildThisFileDirectory)Utility\DirectXMathConvert.inl" />
+    <None Include="$(MSBuildThisFileDirectory)Utility\DirectXMathMatrix.inl" />
+    <None Include="$(MSBuildThisFileDirectory)Utility\DirectXMathMisc.inl" />
+    <None Include="$(MSBuildThisFileDirectory)Utility\DirectXMathVector.inl" />
+    <None Include="$(MSBuildThisFileDirectory)Utility\DirectXPackedVector.inl" />
   </ItemGroup>
 </Project>

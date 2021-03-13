@@ -19,19 +19,6 @@ using namespace wiIntersect_BindLua;
 
 namespace wiRenderer_BindLua
 {
-	int SetResolutionScale(lua_State* L)
-	{
-		int argc = wiLua::SGetArgCount(L);
-		if (argc > 0)
-		{
-			wiRenderer::SetResolutionScale(wiLua::SGetFloat(L, 1));
-		}
-		else
-		{
-			wiLua::SError(L, "SetResolutionScale(float) not enough arguments!");
-		}
-		return 0;
-	}
 	int SetGamma(lua_State* L)
 	{
 		int argc = wiLua::SGetArgCount(L);
@@ -75,44 +62,15 @@ namespace wiRenderer_BindLua
 		return 1;
 	}
 
-	int GetCamera(lua_State* L)
-	{
-		Luna<CameraComponent_BindLua>::push(L, new CameraComponent_BindLua(&wiRenderer::GetCamera()));
-		return 1;
-	}
-	int AttachCamera(lua_State* L)
-	{
-		int argc = wiLua::SGetArgCount(L);
-		if (argc > 0)
-		{
-			Entity entity = (Entity)wiLua::SGetLongLong(L, 1);
-			wiRenderer::AttachCamera(entity);
-		}
-		else
-		{
-			wiLua::SError(L, "AttachCamera(Entity entity) not enough arguments!");
-		}
-		return 0;
-	}
-
-	int SetAlphaCompositionEnabled(lua_State* L)
-	{
-		int argc = wiLua::SGetArgCount(L);
-		if (argc > 0)
-		{
-			wiRenderer::SetAlphaCompositionEnabled(wiLua::SGetBool(L, 1));
-		}
-		return 0;
-	}
 	int SetShadowProps2D(lua_State* L)
 	{
 		int argc = wiLua::SGetArgCount(L);
 		if (argc > 1)
 		{
-			wiRenderer::SetShadowProps2D(wiLua::SGetInt(L, 1), wiLua::SGetInt(L, 2), wiLua::SGetInt(L, 3));
+			wiRenderer::SetShadowProps2D(wiLua::SGetInt(L, 1), wiLua::SGetInt(L, 2));
 		}
 		else
-			wiLua::SError(L, "SetShadowProps2D(int resolution, int count, int softShadowQuality) not enough arguments!");
+			wiLua::SError(L, "SetShadowProps2D(int resolution, int count) not enough arguments!");
 		return 0;
 	}
 	int SetShadowPropsCube(lua_State* L)
@@ -395,7 +353,15 @@ namespace wiRenderer_BindLua
 
 	int ClearWorld(lua_State* L)
 	{
-		wiRenderer::ClearWorld();
+		Scene_BindLua* scene = Luna<Scene_BindLua>::lightcheck(L, 1);
+		if (scene == nullptr)
+		{
+			wiRenderer::ClearWorld(wiScene::GetScene());
+		}
+		else
+		{
+			wiRenderer::ClearWorld(*scene->scene);
+		}
 		return 0;
 	}
 	int ReloadShaders(lua_State* L)
@@ -411,46 +377,41 @@ namespace wiRenderer_BindLua
 		{
 			initialized = true;
 
-			wiLua::GetGlobal()->RegisterFunc("SetResolutionScale", SetResolutionScale);
-			wiLua::GetGlobal()->RegisterFunc("SetGamma", SetGamma);
-			wiLua::GetGlobal()->RegisterFunc("SetGameSpeed", SetGameSpeed);
-			wiLua::GetGlobal()->RegisterFunc("GetGameSpeed", GetGameSpeed);
+			wiLua::RegisterFunc("SetGamma", SetGamma);
+			wiLua::RegisterFunc("SetGameSpeed", SetGameSpeed);
+			wiLua::RegisterFunc("GetGameSpeed", GetGameSpeed);
 
-			wiLua::GetGlobal()->RegisterFunc("GetScreenWidth", GetScreenWidth);
-			wiLua::GetGlobal()->RegisterFunc("GetScreenHeight", GetScreenHeight);
+			wiLua::RegisterFunc("GetScreenWidth", GetScreenWidth);
+			wiLua::RegisterFunc("GetScreenHeight", GetScreenHeight);
 
-			wiLua::GetGlobal()->RegisterFunc("GetCamera", GetCamera);
-			wiLua::GetGlobal()->RegisterFunc("AttachCamera", AttachCamera);
+			wiLua::RegisterFunc("SetShadowProps2D", SetShadowProps2D);
+			wiLua::RegisterFunc("SetShadowPropsCube", SetShadowPropsCube);
+			wiLua::RegisterFunc("SetDebugBoxesEnabled", SetDebugBoxesEnabled);
+			wiLua::RegisterFunc("SetDebugPartitionTreeEnabled", SetDebugPartitionTreeEnabled);
+			wiLua::RegisterFunc("SetDebugBonesEnabled", SetDebugBonesEnabled);
+			wiLua::RegisterFunc("SetDebugEmittersEnabled", SetDebugEmittersEnabled);
+			wiLua::RegisterFunc("SetDebugForceFieldsEnabled", SetDebugForceFieldsEnabled);
+			wiLua::RegisterFunc("SetVSyncEnabled", SetVSyncEnabled);
+			wiLua::RegisterFunc("SetResolution", SetResolution);
+			wiLua::RegisterFunc("SetDebugLightCulling", SetDebugLightCulling);
+			wiLua::RegisterFunc("SetOcclusionCullingEnabled", SetOcclusionCullingEnabled);
 
-			wiLua::GetGlobal()->RegisterFunc("SetAlphaCompositionEnabled", SetAlphaCompositionEnabled);
-			wiLua::GetGlobal()->RegisterFunc("SetShadowProps2D", SetShadowProps2D);
-			wiLua::GetGlobal()->RegisterFunc("SetShadowPropsCube", SetShadowPropsCube);
-			wiLua::GetGlobal()->RegisterFunc("SetDebugBoxesEnabled", SetDebugBoxesEnabled);
-			wiLua::GetGlobal()->RegisterFunc("SetDebugPartitionTreeEnabled", SetDebugPartitionTreeEnabled);
-			wiLua::GetGlobal()->RegisterFunc("SetDebugBonesEnabled", SetDebugBonesEnabled);
-			wiLua::GetGlobal()->RegisterFunc("SetDebugEmittersEnabled", SetDebugEmittersEnabled);
-			wiLua::GetGlobal()->RegisterFunc("SetDebugForceFieldsEnabled", SetDebugForceFieldsEnabled);
-			wiLua::GetGlobal()->RegisterFunc("SetVSyncEnabled", SetVSyncEnabled);
-			wiLua::GetGlobal()->RegisterFunc("SetResolution", SetResolution);
-			wiLua::GetGlobal()->RegisterFunc("SetDebugLightCulling", SetDebugLightCulling);
-			wiLua::GetGlobal()->RegisterFunc("SetOcclusionCullingEnabled", SetOcclusionCullingEnabled);
-
-			wiLua::GetGlobal()->RegisterFunc("DrawLine", DrawLine);
-			wiLua::GetGlobal()->RegisterFunc("DrawPoint", DrawPoint);
-			wiLua::GetGlobal()->RegisterFunc("DrawBox", DrawBox);
-			wiLua::GetGlobal()->RegisterFunc("DrawSphere", DrawSphere);
-			wiLua::GetGlobal()->RegisterFunc("DrawCapsule", DrawCapsule);
-			wiLua::GetGlobal()->RegisterFunc("PutWaterRipple", PutWaterRipple);
+			wiLua::RegisterFunc("DrawLine", DrawLine);
+			wiLua::RegisterFunc("DrawPoint", DrawPoint);
+			wiLua::RegisterFunc("DrawBox", DrawBox);
+			wiLua::RegisterFunc("DrawSphere", DrawSphere);
+			wiLua::RegisterFunc("DrawCapsule", DrawCapsule);
+			wiLua::RegisterFunc("PutWaterRipple", PutWaterRipple);
 
 
-			wiLua::GetGlobal()->RunText("PICK_VOID = 0");
-			wiLua::GetGlobal()->RunText("PICK_OPAQUE = 1");
-			wiLua::GetGlobal()->RunText("PICK_TRANSPARENT = 2");
-			wiLua::GetGlobal()->RunText("PICK_WATER = 4");
+			wiLua::RunText("PICK_VOID = 0");
+			wiLua::RunText("PICK_OPAQUE = 1");
+			wiLua::RunText("PICK_TRANSPARENT = 2");
+			wiLua::RunText("PICK_WATER = 4");
 
 
-			wiLua::GetGlobal()->RegisterFunc("ClearWorld", ClearWorld);
-			wiLua::GetGlobal()->RegisterFunc("ReloadShaders", ReloadShaders);
+			wiLua::RegisterFunc("ClearWorld", ClearWorld);
+			wiLua::RegisterFunc("ReloadShaders", ReloadShaders);
 		}
 	}
 };

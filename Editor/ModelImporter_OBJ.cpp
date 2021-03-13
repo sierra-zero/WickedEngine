@@ -74,9 +74,8 @@ static const bool transform_to_LH = true;
 
 void ImportModel_OBJ(const std::string& fileName, Scene& scene)
 {
-	string directory, name;
-	wiHelper::SplitPath(fileName, directory, name);
-	wiHelper::RemoveExtensionFromFileName(name);
+	string directory = wiHelper::GetDirectoryFromPath(fileName);
+	string name = wiHelper::GetFileNameFromPath(fileName);
 
 	tinyobj::attrib_t obj_attrib;
 	vector<tinyobj::shape_t> obj_shapes;
@@ -113,43 +112,36 @@ void ImportModel_OBJ(const std::string& fileName, Scene& scene)
 			MaterialComponent& material = *scene.materials.GetComponent(materialEntity);
 
 			material.baseColor = XMFLOAT4(obj_material.diffuse[0], obj_material.diffuse[1], obj_material.diffuse[2], 1);
-			material.baseColorMapName = obj_material.diffuse_texname;
-			material.displacementMapName = obj_material.displacement_texname;
+			material.textures[MaterialComponent::BASECOLORMAP].name = obj_material.diffuse_texname;
+			material.textures[MaterialComponent::DISPLACEMENTMAP].name = obj_material.displacement_texname;
 			material.emissiveColor.x = obj_material.emission[0];
 			material.emissiveColor.y = obj_material.emission[1];
 			material.emissiveColor.z = obj_material.emission[2];
 			material.emissiveColor.w = max(obj_material.emission[0], max(obj_material.emission[1], obj_material.emission[2]));
-			material.refractionIndex = obj_material.ior;
+			//material.refractionIndex = obj_material.ior;
 			material.metalness = obj_material.metallic;
-			material.normalMapName = obj_material.normal_texname;
-			material.surfaceMapName = obj_material.specular_texname;
+			material.textures[MaterialComponent::NORMALMAP].name = obj_material.normal_texname;
+			material.textures[MaterialComponent::SURFACEMAP].name = obj_material.specular_texname;
 			material.roughness = obj_material.roughness;
 
-			if (material.normalMapName.empty())
+			if (material.textures[MaterialComponent::NORMALMAP].name.empty())
 			{
-				material.normalMapName = obj_material.bump_texname;
+				material.textures[MaterialComponent::NORMALMAP].name = obj_material.bump_texname;
 			}
-			if (material.surfaceMapName.empty())
+			if (material.textures[MaterialComponent::SURFACEMAP].name.empty())
 			{
-				material.surfaceMapName = obj_material.specular_highlight_texname;
+				material.textures[MaterialComponent::SURFACEMAP].name = obj_material.specular_highlight_texname;
 			}
 
-			if (!material.surfaceMapName.empty())
+			for (auto& x : material.textures)
 			{
-				material.surfaceMap = wiResourceManager::Load(directory + material.surfaceMapName);
+				if (!x.name.empty())
+				{
+					x.name = directory + x.name;
+				}
 			}
-			if (!material.baseColorMapName.empty())
-			{
-				material.baseColorMap = wiResourceManager::Load(directory + material.baseColorMapName);
-			}
-			if (!material.normalMapName.empty())
-			{
-				material.normalMap = wiResourceManager::Load(directory + material.normalMapName);
-			}
-			if (!material.displacementMapName.empty())
-			{
-				material.displacementMap = wiResourceManager::Load(directory + material.displacementMapName);
-			}
+
+			material.CreateRenderData();
 
 			materialLibrary.push_back(materialEntity); // for subset-indexing...
 		}

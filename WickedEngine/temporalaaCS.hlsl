@@ -3,6 +3,7 @@
 
 TEXTURE2D(input_current, float3, TEXSLOT_ONDEMAND0);
 TEXTURE2D(input_history, float3, TEXSLOT_ONDEMAND1);
+TEXTURE2D(texture_depth_history, float, TEXSLOT_ONDEMAND2);
 
 RWTEXTURE2D(output, float3, 0);
 
@@ -65,7 +66,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 			}
 		}
 	}
-	const float2 velocity = texture_gbuffer1[DTid.xy + bestOffset].zw;
+	const float2 velocity = texture_gbuffer2[DTid.xy + bestOffset].xy;
 
 #else
 
@@ -93,11 +94,23 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 			}
 		}
 	}
-	const float2 velocity = texture_gbuffer1[bestPixel].zw;
+	const float2 velocity = texture_gbuffer2[bestPixel].xy;
 
 #endif // USE_LDS
 
 	const float2 prevUV = uv + velocity;
+
+#if 0
+	// Disocclusion fallback:
+	float depth_current = texture_lineardepth[DTid.xy] * g_xCamera_ZFarP;
+	float depth_history = getLinearDepth(texture_depth_history.SampleLevel(sampler_point_clamp, prevUV, 0));
+	if (length(velocity) > 0.01 && abs(depth_current - depth_history) > 1)
+	{
+		output[DTid.xy] = current;
+		output[DTid.xy] = float3(1, 0, 0);
+		return;
+	}
+#endif
 
 	// we cannot avoid the linear filter here because point sampling could sample irrelevant pixels but we try to correct it later:
 	float3 history = input_history.SampleLevel(sampler_linear_clamp, prevUV, 0).rgb;

@@ -14,6 +14,7 @@
 #include "wiStartupArguments.h"
 #include "wiFont.h"
 #include "wiImage.h"
+#include "wiEvent.h"
 
 #include "wiGraphicsDevice_DX11.h"
 #include "wiGraphicsDevice_DX12.h"
@@ -34,42 +35,6 @@ void MainComponent::Initialize()
 		return;
 	}
 	initialized = true;
-
-	wiHelper::GetOriginalWorkingDirectory();
-
-	// User can also create a graphics device if custom logic is desired, but he must do before this function!
-	if (wiRenderer::GetDevice() == nullptr)
-	{
-		auto window = wiPlatform::GetWindow();
-
-		bool debugdevice = wiStartupArguments::HasArgument("debugdevice");
-
-		if (wiStartupArguments::HasArgument("vulkan"))
-		{
-#ifdef WICKEDENGINE_BUILD_VULKAN
-			wiRenderer::SetShaderPath(wiRenderer::GetShaderPath() + "spirv/");
-			wiRenderer::SetDevice(std::make_shared<GraphicsDevice_Vulkan>(window, fullscreen, debugdevice));
-#else
-			wiHelper::messageBox("Vulkan SDK not found during building the application! Vulkan API disabled!", "Error");
-#endif
-		}
-		else if (wiStartupArguments::HasArgument("dx12"))
-		{
-			if (wiStartupArguments::HasArgument("hlsl6"))
-			{
-				wiRenderer::SetShaderPath(wiRenderer::GetShaderPath() + "hlsl6/");
-			}
-			wiRenderer::SetDevice(std::make_shared<GraphicsDevice_DX12>(window, fullscreen, debugdevice));
-		}
-
-		// default graphics device:
-		if (wiRenderer::GetDevice() == nullptr)
-		{
-			wiRenderer::SetDevice(std::make_shared<GraphicsDevice_DX11>(window, fullscreen, debugdevice));
-		}
-
-	}
-
 
 	wiInitializer::InitializeComponentsAsync();
 }
@@ -117,20 +82,21 @@ void MainComponent::Run()
 	if (!startup_script)
 	{
 		startup_script = true;
-		wiLua::GetGlobal()->RegisterObject(MainComponent_BindLua::className, "main", new MainComponent_BindLua(this));
-		wiLua::GetGlobal()->RunFile("startup.lua");
+		wiLua::RegisterObject(MainComponent_BindLua::className, "main", new MainComponent_BindLua(this));
+		wiLua::RunFile("startup.lua");
 	}
-
-	wiPlatform::PopMessages();
 
 	wiProfiler::BeginFrame();
 
 	deltaTime = float(std::max(0.0, timer.elapsed() / 1000.0));
 	timer.record();
 
-	if (wiPlatform::IsWindowActive())
+	if (is_window_active)
 	{
 		// If the application is active, run Update loops:
+
+		// Wake up the events that need to be executed on the main thread, in thread safe manner:
+		wiEvent::FireEvent(SYSTEM_EVENT_THREAD_SAFE_POINT, 0);
 
 		const float dt = framerate_lock ? (1.0f / targetFrameRate) : deltaTime;
 
@@ -183,20 +149,24 @@ void MainComponent::Run()
 		wiProfiler::EndFrame(cmd); // End before Present() so that GPU queries are properly recorded
 	}
 	wiRenderer::GetDevice()->PresentEnd(cmd);
-
-	wiRenderer::EndFrame();
 }
 
 void MainComponent::Update(float dt)
 {
 	auto range = wiProfiler::BeginRangeCPU("Update");
 
-	wiLua::GetGlobal()->SetDeltaTime(double(dt));
-	wiLua::GetGlobal()->Update();
+	if (GetActivePath() != nullptr)
+	{
+		GetActivePath()->PreUpdate();
+	}
+
+	wiLua::SetDeltaTime(double(dt));
+	wiLua::Update();
 
 	if (GetActivePath() != nullptr)
 	{
 		GetActivePath()->Update(dt);
+		GetActivePath()->PostUpdate();
 	}
 
 	wiProfiler::EndRange(range); // Update
@@ -205,7 +175,7 @@ void MainComponent::Update(float dt)
 void MainComponent::FixedUpdate()
 {
 	wiBackLog::Update();
-	wiLua::GetGlobal()->FixedUpdate();
+	wiLua::FixedUpdate();
 
 	if (GetActivePath() != nullptr)
 	{
@@ -217,7 +187,7 @@ void MainComponent::Render()
 {
 	auto range = wiProfiler::BeginRangeCPU("Render");
 
-	wiLua::GetGlobal()->Render();
+	wiLua::Render();
 
 	if (GetActivePath() != nullptr)
 	{
@@ -236,12 +206,14 @@ void MainComponent::Compose(CommandList cmd)
 		GetActivePath()->Compose(cmd);
 	}
 
+	GraphicsDevice* device = wiRenderer::GetDevice();
+
 	if (fadeManager.IsActive())
 	{
 		// display fade rect
 		static wiImageParams fx;
-		fx.siz.x = (float)wiRenderer::GetDevice()->GetScreenWidth();
-		fx.siz.y = (float)wiRenderer::GetDevice()->GetScreenHeight();
+		fx.siz.x = (float)device->GetScreenWidth();
+		fx.siz.y = (float)device->GetScreenHeight();
 		fx.opacity = fadeManager.opacity;
 		wiImage::Draw(wiTextureHelper::getColor(fadeManager.color), fx, cmd);
 	}
@@ -266,16 +238,20 @@ void MainComponent::Compose(CommandList cmd)
 			ss << "[UWP]";
 #endif
 
-			if (dynamic_cast<GraphicsDevice_DX11*>(wiRenderer::GetDevice()))
+#ifdef WICKEDENGINE_BUILD_DX11
+			if (dynamic_cast<GraphicsDevice_DX11*>(device))
 			{
 				ss << "[DX11]";
 			}
-			else if (dynamic_cast<GraphicsDevice_DX12*>(wiRenderer::GetDevice()))
+#endif
+#ifdef WICKEDENGINE_BUILD_DX12
+			if (dynamic_cast<GraphicsDevice_DX12*>(device))
 			{
 				ss << "[DX12]";
 			}
+#endif
 #ifdef WICKEDENGINE_BUILD_VULKAN
-			else if (dynamic_cast<GraphicsDevice_Vulkan*>(wiRenderer::GetDevice()))
+			if (dynamic_cast<GraphicsDevice_Vulkan*>(device))
 			{
 				ss << "[Vulkan]";
 			}
@@ -284,7 +260,7 @@ void MainComponent::Compose(CommandList cmd)
 #ifdef _DEBUG
 			ss << "[DEBUG]";
 #endif
-			if (wiRenderer::GetDevice()->IsDebugDevice())
+			if (device->IsDebugDevice())
 			{
 				ss << "[debugdevice]";
 			}
@@ -292,7 +268,7 @@ void MainComponent::Compose(CommandList cmd)
 		}
 		if (infoDisplay.resolution)
 		{
-			ss << "Resolution: " << wiRenderer::GetDevice()->GetResolutionWidth() << " x " << wiRenderer::GetDevice()->GetResolutionHeight() << " (" << wiPlatform::GetDPI() << " dpi)" << endl;
+			ss << "Resolution: " << device->GetResolutionWidth() << " x " << device->GetResolutionHeight() << " (" << device->GetDPI() << " dpi)" << endl;
 		}
 		if (infoDisplay.fpsinfo)
 		{
@@ -327,6 +303,11 @@ void MainComponent::Compose(CommandList cmd)
 
 		ss.precision(2);
 		wiFont::Draw(ss.str(), wiFontParams(4, 4, infoDisplay.size, WIFALIGN_LEFT, WIFALIGN_TOP, wiColor(255,255,255,255), wiColor(0,0,0,255)), cmd);
+
+		if (infoDisplay.colorgrading_helper)
+		{
+			wiImage::Draw(wiTextureHelper::getColorGradeDefault(), wiImageParams(0, 0, 256.0f / device->GetDPIScaling(), 16.0f / device->GetDPIScaling()), cmd);
+		}
 	}
 
 	wiProfiler::DrawData(4, 120, cmd);
@@ -336,9 +317,71 @@ void MainComponent::Compose(CommandList cmd)
 	wiProfiler::EndRange(range); // Compose
 }
 
-void MainComponent::SetWindow(wiPlatform::window_type window)
+void MainComponent::SetWindow(wiPlatform::window_type window, bool fullscreen)
 {
-	wiPlatform::GetWindowState().window = window;
-	wiPlatform::InitDPI();
+	// User can also create a graphics device if custom logic is desired, but they must do before this function!
+	if (wiRenderer::GetDevice() == nullptr)
+	{
+		bool debugdevice = wiStartupArguments::HasArgument("debugdevice");
+
+		bool use_dx11 = wiStartupArguments::HasArgument("dx11");
+		bool use_dx12 = wiStartupArguments::HasArgument("dx12");
+		bool use_vulkan = wiStartupArguments::HasArgument("vulkan");
+
+#ifndef WICKEDENGINE_BUILD_DX11
+		if (use_dx11) {
+			wiHelper::messageBox("The engine was built without DX11 support!", "Error");
+			use_dx11 = false;
+		}
+#endif
+#ifndef WICKEDENGINE_BUILD_DX12
+		if (use_dx12) {
+			wiHelper::messageBox("The engine was built without DX12 support!", "Error");
+			use_dx12 = false;
+		}
+#endif
+#ifndef WICKEDENGINE_BUILD_VULKAN
+		if (use_vulkan) {
+			wiHelper::messageBox("The engine was built without Vulkan support!", "Error");
+			use_vulkan = false;
+		}
+#endif
+
+		if (!use_dx11 && !use_dx12 && !use_vulkan)
+		{
+#if defined(WICKEDENGINE_BUILD_DX11)
+			use_dx11 = true;
+#elif defined(WICKEDENGINE_BUILD_DX12)
+			use_dx12 = true;
+#elif defined(WICKEDENGINE_BUILD_VULKAN)
+			use_vulkan = true;
+#else
+			wiBackLog::post("No rendering backend is enabled! Please enable at least one so we can use it as default");
+			assert(false);
+#endif
+		}
+		assert(use_dx11 || use_dx12 || use_vulkan);
+
+		if (use_vulkan)
+		{
+#ifdef WICKEDENGINE_BUILD_VULKAN
+			wiRenderer::SetShaderPath(wiRenderer::GetShaderPath() + "spirv/");
+			wiRenderer::SetDevice(std::make_shared<GraphicsDevice_Vulkan>(window, fullscreen, debugdevice));
+#endif
+		}
+		else if (use_dx12)
+		{
+#ifdef WICKEDENGINE_BUILD_DX12
+			wiRenderer::SetShaderPath(wiRenderer::GetShaderPath() + "hlsl6/");
+			wiRenderer::SetDevice(std::make_shared<GraphicsDevice_DX12>(window, fullscreen, debugdevice));
+#endif
+		}
+		else if (use_dx11)
+		{
+#ifdef WICKEDENGINE_BUILD_DX11
+			wiRenderer::SetDevice(std::make_shared<GraphicsDevice_DX11>(window, fullscreen, debugdevice));
+#endif
+		}
+	}
 }
 

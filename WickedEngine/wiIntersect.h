@@ -34,6 +34,7 @@ struct AABB
 	bool intersects(const XMFLOAT3& p) const;
 	bool intersects(const RAY& ray) const;
 	bool intersects(const SPHERE& sphere) const;
+	bool intersects(const BoundingFrustum& frustum) const;
 	AABB operator* (float a);
 	static AABB Merge(const AABB& a, const AABB& b);
 
@@ -56,7 +57,7 @@ struct AABB
 		return XMFLOAT3(0, 0, 0);
 	}
 
-	void Serialize(wiArchive& archive, wiECS::Entity seed = wiECS::INVALID_ENTITY);
+	void Serialize(wiArchive& archive, wiECS::EntitySerializer& seri);
 };
 struct SPHERE 
 {
@@ -77,8 +78,8 @@ struct CAPSULE
 	CAPSULE(const XMFLOAT3& base, const XMFLOAT3& tip, float radius) :base(base), tip(tip), radius(radius) {}
 	CAPSULE(const SPHERE& sphere, float height) :
 		base(XMFLOAT3(sphere.center.x, sphere.center.y - sphere.radius, sphere.center.z)),
-		radius(sphere.radius), 
-		tip(XMFLOAT3(base.x, base.y + height, base.z)) 
+		tip(XMFLOAT3(base.x, base.y + height, base.z)),
+		radius(sphere.radius)
 	{}
 	inline AABB getAABB() const
 	{
@@ -105,11 +106,10 @@ struct RAY
 	bool intersects(const SPHERE& b) const;
 };
 
-class Frustum
+struct Frustum
 {
-private:
 	XMFLOAT4 planes[6];
-public:
+
 	void Create(const XMMATRIX& viewProjection);
 
 	bool CheckPoint(const XMFLOAT3&) const;
@@ -122,6 +122,7 @@ public:
 		BOX_FRUSTUM_INSIDE,
 	};
 	BoxFrustumIntersect CheckBox(const AABB& box) const;
+	bool CheckBoxFast(const AABB& box) const;
 
 	const XMFLOAT4& getNearPlane() const;
 	const XMFLOAT4& getFarPlane() const;
@@ -142,7 +143,7 @@ public:
 	Hitbox2D(const XMFLOAT2& newPos, const XMFLOAT2 newSiz) :pos(newPos), siz(newSiz) {}
 	~Hitbox2D() {};
 
-	bool intersects(const Hitbox2D& b);
+	bool intersects(const Hitbox2D& b) const;
 };
 
 

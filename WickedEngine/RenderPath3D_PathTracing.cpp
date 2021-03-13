@@ -24,8 +24,8 @@ void RenderPath3D_PathTracing::ResizeBuffers()
 		TextureDesc desc;
 		desc.BindFlags = BIND_UNORDERED_ACCESS | BIND_SHADER_RESOURCE | BIND_RENDER_TARGET;
 		desc.Format = FORMAT_R32G32B32A32_FLOAT;
-		desc.Width = wiRenderer::GetInternalResolution().x;
-		desc.Height = wiRenderer::GetInternalResolution().y;
+		desc.Width = GetInternalResolution().x;
+		desc.Height = GetInternalResolution().y;
 		device->CreateTexture(&desc, nullptr, &traceResult);
 		device->SetName(&traceResult, "traceResult");
 	}
@@ -33,8 +33,8 @@ void RenderPath3D_PathTracing::ResizeBuffers()
 		TextureDesc desc;
 		desc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
 		desc.Format = defaultTextureFormat;
-		desc.Width = wiRenderer::GetInternalResolution().x;
-		desc.Height = wiRenderer::GetInternalResolution().y;
+		desc.Width = GetInternalResolution().x;
+		desc.Height = GetInternalResolution().y;
 		device->CreateTexture(&desc, nullptr, &rtPostprocess_LDR[0]);
 		device->SetName(&rtPostprocess_LDR[0], "rtPostprocess_LDR[0]");
 
@@ -55,11 +55,12 @@ void RenderPath3D_PathTracing::ResizeBuffers()
 
 	{
 		RenderPassDesc desc;
-		desc.numAttachments = 1;
-		desc.attachments[0] = { RenderPassAttachment::RENDERTARGET,RenderPassAttachment::LOADOP_CLEAR,&traceResult,-1 };
+		desc.attachments.push_back(RenderPassAttachment::RenderTarget(&traceResult, RenderPassAttachment::LOADOP_CLEAR));
 
 		device->CreateRenderPass(&desc, &renderpass_debugbvh);
 	}
+
+	wiRenderer::CreateRayBuffers(rayBuffers, GetInternalResolution().x * GetInternalResolution().y);
 
 	// also reset accumulation buffer state:
 	sam = -1;
@@ -67,18 +68,18 @@ void RenderPath3D_PathTracing::ResizeBuffers()
 
 void RenderPath3D_PathTracing::Update(float dt)
 {
-	const Scene& scene = wiScene::GetScene();
+	setOcclusionCullingEnabled(false);
 
-	if (wiRenderer::GetCamera().IsDirty())
+	if (camera->IsDirty())
 	{
-		wiRenderer::GetCamera().SetDirty(false);
+		camera->SetDirty(false);
 		sam = -1;
 	}
 	else
 	{
-		for (size_t i = 0; i < scene.transforms.GetCount(); ++i)
+		for (size_t i = 0; i < scene->transforms.GetCount(); ++i)
 		{
-			const TransformComponent& transform = scene.transforms[i];
+			const TransformComponent& transform = scene->transforms[i];
 
 			if (transform.IsDirty())
 			{
@@ -89,9 +90,9 @@ void RenderPath3D_PathTracing::Update(float dt)
 
 		if (sam >= 0)
 		{
-			for (size_t i = 0; i < scene.materials.GetCount(); ++i)
+			for (size_t i = 0; i < scene->materials.GetCount(); ++i)
 			{
-				const MaterialComponent& material = scene.materials[i];
+				const MaterialComponent& material = scene->materials[i];
 
 				if (material.IsDirty())
 				{
@@ -114,20 +115,28 @@ void RenderPath3D_PathTracing::Render() const
 
 	// Setup:
 	cmd = device->BeginCommandList();
-	wiJobSystem::Execute(ctx, [this, cmd] {
+	wiJobSystem::Execute(ctx, [this, cmd](wiJobArgs args) {
 
-		wiRenderer::UpdateRenderData(cmd);
+		wiRenderer::UpdateRenderData(visibility_main, frameCB, cmd);
 
 		if (sam == 0)
 		{
-			wiRenderer::BuildSceneBVH(cmd);
+			wiRenderer::BuildSceneBVH(*scene, cmd);
 		}
 	});
 
 	// Main scene:
 	cmd = device->BeginCommandList();
-	wiJobSystem::Execute(ctx, [this, device, cmd] {
+	wiJobSystem::Execute(ctx, [this, cmd](wiJobArgs args) {
 
+		GraphicsDevice* device = wiRenderer::GetDevice();
+
+		wiRenderer::UpdateCameraCB(
+			*camera,
+			*camera,
+			*camera,
+			cmd
+		);
 		wiRenderer::BindCommonResources(cmd);
 
 		if (wiRenderer::GetRaytraceDebugBVHVisualizerEnabled())
@@ -139,7 +148,6 @@ void RenderPath3D_PathTracing::Render() const
 			vp.Height = (float)traceResult.GetDesc().Height;
 			device->BindViewports(1, &vp, cmd);
 
-			wiRenderer::UpdateCameraCB(wiRenderer::GetCamera(), cmd);
 			wiRenderer::RayTraceSceneBVH(cmd);
 
 			device->RenderPassEnd(cmd);
@@ -148,10 +156,8 @@ void RenderPath3D_PathTracing::Render() const
 		{
 			auto range = wiProfiler::BeginRangeGPU("Traced Scene", cmd);
 
-			wiRenderer::UpdateCameraCB(wiRenderer::GetCamera(), cmd);
-
-			wiRenderer::RayBuffers* rayBuffers = wiRenderer::GenerateScreenRayBuffers(wiRenderer::GetCamera(), cmd);
-			wiRenderer::RayTraceScene(rayBuffers, &traceResult, sam, cmd);
+			wiRenderer::GenerateScreenRayBuffers(rayBuffers, *camera, GetInternalResolution().x, GetInternalResolution().y, cmd);
+			wiRenderer::RayTraceScene(*scene, rayBuffers, &traceResult, sam, cmd);
 
 
 			wiProfiler::EndRange(range); // Traced Scene

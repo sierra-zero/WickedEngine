@@ -30,6 +30,7 @@ static const uint PARTICLECOUNTER_OFFSET_ALIVECOUNT_AFTERSIMULATION = PARTICLECO
 
 static const uint EMITTER_OPTION_BIT_FRAME_BLENDING_ENABLED = 1 << 0;
 static const uint EMITTER_OPTION_BIT_SPH_ENABLED = 1 << 1;
+static const uint EMITTER_OPTION_BIT_MESH_SHADER_ENABLED = 1 << 2;
 
 CBUFFER(EmittedParticleCB, CBSLOT_OTHER_EMITTEDPARTICLE)
 {
@@ -78,10 +79,17 @@ CBUFFER(EmittedParticleCB, CBSLOT_OTHER_EMITTEDPARTICLE)
 	float		xEmitterFixedTimestep;	// we can force a fixed timestep (>0) onto the simulation to avoid blowing up
 	float		xParticleEmissive;
 
+	float3		xParticleGravity;
+	float		xParticleDrag;
+
+	float3		xParticleVelocity;
+	float		xParticleRandomColorFactor;
+
 };
 
-#define THREADCOUNT_EMIT 256
-#define THREADCOUNT_SIMULATION 256
+static const uint THREADCOUNT_EMIT = 256;
+static const uint THREADCOUNT_SIMULATION = 256;
+static const uint THREADCOUNT_MESH_SHADER = 32;
 
 static const uint ARGUMENTBUFFER_OFFSET_DISPATCHEMIT = 0;
 static const uint ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION = ARGUMENTBUFFER_OFFSET_DISPATCHEMIT + (3 * 4);

@@ -1,33 +1,7 @@
 #include "wiGraphicsDevice.h"
-#include "wiPlatform.h"
-
-// These will let the driver select the dedicated GPU in favour of the integrated one:
-extern "C" {
-	_declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
-	_declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
-}
+#include "wiEvent.h"
 
 using namespace wiGraphics;
-
-bool GraphicsDevice::CheckCapability(GRAPHICSDEVICE_CAPABILITY capability) const
-{
-	switch (capability)
-	{
-	case wiGraphics::GraphicsDevice::GRAPHICSDEVICE_CAPABILITY_TESSELLATION:
-		return TESSELLATION;
-	case wiGraphics::GraphicsDevice::GRAPHICSDEVICE_CAPABILITY_CONSERVATIVE_RASTERIZATION:
-		return CONSERVATIVE_RASTERIZATION;
-	case wiGraphics::GraphicsDevice::GRAPHICSDEVICE_CAPABILITY_RASTERIZER_ORDERED_VIEWS:
-		return RASTERIZER_ORDERED_VIEWS;
-	case wiGraphics::GraphicsDevice::GRAPHICSDEVICE_CAPABILITY_UAV_LOAD_FORMAT_COMMON:
-		return UAV_LOAD_FORMAT_COMMON;
-	case wiGraphics::GraphicsDevice::GRAPHICSDEVICE_CAPABILITY_UAV_LOAD_FORMAT_R11G11B10_FLOAT:
-		return UAV_LOAD_FORMAT_R11G11B10_FLOAT;
-	case wiGraphics::GraphicsDevice::GRAPHICSDEVICE_CAPABILITY_RENDERTARGET_AND_VIEWPORT_ARRAYINDEX_WITHOUT_GS:
-		return RENDERTARGET_AND_VIEWPORT_ARRAYINDEX_WITHOUT_GS;
-	}
-	return false;
-}
 
 uint32_t GraphicsDevice::GetFormatStride(FORMAT value) const
 {
@@ -37,6 +11,20 @@ uint32_t GraphicsDevice::GetFormatStride(FORMAT value) const
 	case FORMAT_R32G32B32A32_FLOAT:
 	case FORMAT_R32G32B32A32_UINT:
 	case FORMAT_R32G32B32A32_SINT:
+	case FORMAT_BC1_UNORM:
+	case FORMAT_BC1_UNORM_SRGB:
+	case FORMAT_BC2_UNORM:
+	case FORMAT_BC2_UNORM_SRGB:
+	case FORMAT_BC3_UNORM:
+	case FORMAT_BC3_UNORM_SRGB:
+	case FORMAT_BC4_SNORM:
+	case FORMAT_BC4_UNORM:
+	case FORMAT_BC5_SNORM:
+	case FORMAT_BC5_UNORM:
+	case FORMAT_BC6H_UF16:
+	case FORMAT_BC6H_SF16:
+	case FORMAT_BC7_UNORM:
+	case FORMAT_BC7_UNORM_SRGB:
 		return 16;
 
 	case FORMAT_R32G32B32_FLOAT:
@@ -172,9 +160,9 @@ bool GraphicsDevice::IsFormatStencilSupport(FORMAT value) const
 
 float GraphicsDevice::GetScreenWidth() const
 {
-	return (float)GetResolutionWidth() / wiPlatform::GetDPIScaling();
+	return (float)GetResolutionWidth() / GetDPIScaling();
 }
 float GraphicsDevice::GetScreenHeight() const
 {
-	return (float)GetResolutionHeight() / wiPlatform::GetDPIScaling();
+	return (float)GetResolutionHeight() / GetDPIScaling();
 }

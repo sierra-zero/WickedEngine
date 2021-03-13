@@ -4,20 +4,19 @@
 class wiTimer
 {
 private:
-	static double PCFreq;
-	static __int64 CounterStart;
-
 	double lastTime;
 public:
 	wiTimer();
 	~wiTimer();
 
+	/// Resets the start time of the engine clock to `now`
 	static void Start();
+	/// Total time since the start of the engine clock in milliseconds
 	static double TotalTime(); 
 
-	//start recording
+	/// Start recording
 	void record();
-	//elapsed time since record()
+	/// Elapsed time since record() in milliseconds
 	double elapsed();
 };
 

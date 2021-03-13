@@ -7,6 +7,10 @@ RWSTRUCTUREDBUFFER(out_Frustums, Frustum, 0);
 [numthreads(TILED_CULLING_BLOCKSIZE, TILED_CULLING_BLOCKSIZE, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
+	uint2 dim;
+	texture_depth.GetDimensions(dim.x, dim.y);
+	float2 dim_rcp = rcp(dim);
+
 	// View space eye position is always at the origin.
 	const float3 eyePos = float3(0, 0, 0);
 
@@ -26,7 +30,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	// Now convert the screen space points to view space
 	for (int i = 0; i < 4; i++)
 	{
-		viewSpace[i] = ScreenToView(screenSpace[i]).xyz;
+		viewSpace[i] = ScreenToView(screenSpace[i], dim_rcp).xyz;
 	}
 
 	// Now build the frustum planes from the view space points
@@ -42,8 +46,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	frustum.planes[3] = ComputePlane(viewSpace[3], eyePos, viewSpace[2]);
 
 	// Store the computed frustum in global memory (if our thread ID is in bounds of the grid).
-	if (DTid.x < xDispatchParams_numThreads.x && DTid.y < xDispatchParams_numThreads.y)
+	if (DTid.x < g_xFrame_EntityCullingTileCount.x && DTid.y < g_xFrame_EntityCullingTileCount.y)
 	{
-		out_Frustums[flatten2D(DTid.xy, xDispatchParams_numThreads.xy)] = frustum;
+		out_Frustums[flatten2D(DTid.xy, g_xFrame_EntityCullingTileCount.xy)] = frustum;
 	}
 }

@@ -7,6 +7,7 @@
 #include "wiGPUSortLib.h"
 #include "wiTextureHelper.h"
 #include "wiBackLog.h"
+#include "wiEvent.h"
 
 //#define BVH_VALIDATE // slow but great for debug!
 #ifdef BVH_VALIDATE
@@ -47,21 +48,21 @@ void wiGPUBVH::UpdateGlobalMaterialResources(const Scene& scene, CommandList cmd
 			{
 				const MaterialComponent& material = *scene.materials.GetComponent(subset.materialID);
 
-				if (material.baseColorMap != nullptr)
+				if (material.textures[MaterialComponent::BASECOLORMAP].resource != nullptr)
 				{
-					sceneTextures.insert(material.baseColorMap);
+					sceneTextures.insert(material.textures[MaterialComponent::BASECOLORMAP].resource);
 				}
-				if (material.surfaceMap != nullptr)
+				if (material.textures[MaterialComponent::SURFACEMAP].resource != nullptr)
 				{
-					sceneTextures.insert(material.surfaceMap);
+					sceneTextures.insert(material.textures[MaterialComponent::SURFACEMAP].resource);
 				}
-				if (material.emissiveMap != nullptr)
+				if (material.textures[MaterialComponent::EMISSIVEMAP].resource != nullptr)
 				{
-					sceneTextures.insert(material.emissiveMap);
+					sceneTextures.insert(material.textures[MaterialComponent::EMISSIVEMAP].resource);
 				}
-				if (material.normalMap != nullptr)
+				if (material.textures[MaterialComponent::NORMALMAP].resource != nullptr)
 				{
-					sceneTextures.insert(material.normalMap);
+					sceneTextures.insert(material.textures[MaterialComponent::NORMALMAP].resource);
 				}
 			}
 		}
@@ -80,7 +81,7 @@ void wiGPUBVH::UpdateGlobalMaterialResources(const Scene& scene, CommandList cmd
 		if (storedTextures.find(res) == storedTextures.end())
 		{
 			// we need to pack this texture into the atlas
-			rect_xywh newRect = rect_xywh(0, 0, res->texture->GetDesc().Width + atlasWrapBorder * 2, res->texture->GetDesc().Height + atlasWrapBorder * 2);
+			rect_xywh newRect = rect_xywh(0, 0, res->texture.desc.Width + atlasWrapBorder * 2, res->texture.desc.Height + atlasWrapBorder * 2);
 			storedTextures[res] = newRect;
 
 			repackAtlas = true;
@@ -120,7 +121,7 @@ void wiGPUBVH::UpdateGlobalMaterialResources(const Scene& scene, CommandList cmd
 
 			for (auto& it : storedTextures)
 			{
-				wiRenderer::CopyTexture2D(globalMaterialAtlas, 0, it.second.x + atlasWrapBorder, it.second.y + atlasWrapBorder, *it.first->texture, 0, cmd, wiRenderer::BORDEREXPAND_WRAP);
+				wiRenderer::CopyTexture2D(globalMaterialAtlas, -1, it.second.x + atlasWrapBorder, it.second.y + atlasWrapBorder, it.first->texture, 0, cmd, wiRenderer::BORDEREXPAND_WRAP);
 			}
 		}
 		else
@@ -143,14 +144,15 @@ void wiGPUBVH::UpdateGlobalMaterialResources(const Scene& scene, CommandList cmd
 			for (auto& subset : mesh.subsets)
 			{
 				const MaterialComponent& material = *scene.materials.GetComponent(subset.materialID);
-				ShaderMaterial global_material = material.CreateShaderMaterial();
+				ShaderMaterial global_material;
+				material.WriteShaderMaterial(&global_material);
 
 				// Add extended properties:
 				const TextureDesc& desc = globalMaterialAtlas.GetDesc();
 
-				if (material.baseColorMap != nullptr)
+				if (material.textures[MaterialComponent::BASECOLORMAP].resource != nullptr)
 				{
-					rect_xywh rect = storedTextures[material.baseColorMap];
+					rect_xywh rect = storedTextures[material.textures[MaterialComponent::BASECOLORMAP].resource];
 					// eliminate border expansion:
 					rect.x += atlasWrapBorder;
 					rect.y += atlasWrapBorder;
@@ -160,9 +162,9 @@ void wiGPUBVH::UpdateGlobalMaterialResources(const Scene& scene, CommandList cmd
 						(float)rect.x / (float)desc.Width, (float)rect.y / (float)desc.Height);
 				}
 
-				if (material.surfaceMap != nullptr)
+				if (material.textures[MaterialComponent::SURFACEMAP].resource != nullptr)
 				{
-					rect_xywh rect = storedTextures[material.surfaceMap];
+					rect_xywh rect = storedTextures[material.textures[MaterialComponent::SURFACEMAP].resource];
 					// eliminate border expansion:
 					rect.x += atlasWrapBorder;
 					rect.y += atlasWrapBorder;
@@ -172,9 +174,9 @@ void wiGPUBVH::UpdateGlobalMaterialResources(const Scene& scene, CommandList cmd
 						(float)rect.x / (float)desc.Width, (float)rect.y / (float)desc.Height);
 				}
 
-				if (material.emissiveMap != nullptr)
+				if (material.textures[MaterialComponent::EMISSIVEMAP].resource != nullptr)
 				{
-					rect_xywh rect = storedTextures[material.emissiveMap];
+					rect_xywh rect = storedTextures[material.textures[MaterialComponent::EMISSIVEMAP].resource];
 					// eliminate border expansion:
 					rect.x += atlasWrapBorder;
 					rect.y += atlasWrapBorder;
@@ -184,9 +186,9 @@ void wiGPUBVH::UpdateGlobalMaterialResources(const Scene& scene, CommandList cmd
 						(float)rect.x / (float)desc.Width, (float)rect.y / (float)desc.Height);
 				}
 
-				if (material.normalMap != nullptr)
+				if (material.textures[MaterialComponent::NORMALMAP].resource != nullptr)
 				{
-					rect_xywh rect = storedTextures[material.normalMap];
+					rect_xywh rect = storedTextures[material.textures[MaterialComponent::NORMALMAP].resource];
 					// eliminate border expansion:
 					rect.x += atlasWrapBorder;
 					rect.y += atlasWrapBorder;
@@ -399,14 +401,14 @@ void wiGPUBVH::Build(const Scene& scene, CommandList cmd)
 
 				device->Dispatch((cb.xBVHMeshTriangleCount + BVH_BUILDER_GROUPSIZE - 1) / BVH_BUILDER_GROUPSIZE, 1, 1, cmd);
 
-				for (auto& subset : mesh.subsets)
-				{
-					materialCount++;
-				}
+				materialCount += (uint32_t)mesh.subsets.size();
 			}
 		}
 
-		device->Barrier(&GPUBarrier::Memory(), 1, cmd);
+		GPUBarrier barriers[] = {
+			GPUBarrier::Memory()
+		};
+		device->Barrier(barriers, arraysize(barriers), cmd);
 		device->UnbindUAVs(0, arraysize(uavs), cmd);
 	}
 	device->UpdateBuffer(&primitiveCounterBuffer, &primitiveCount, cmd);
@@ -435,14 +437,20 @@ void wiGPUBVH::Build(const Scene& scene, CommandList cmd)
 
 		device->Dispatch((primitiveCount + BVH_BUILDER_GROUPSIZE - 1) / BVH_BUILDER_GROUPSIZE, 1, 1, cmd);
 
-		device->Barrier(&GPUBarrier::Memory(), 1, cmd);
+		GPUBarrier barriers[] = {
+			GPUBarrier::Memory()
+		};
+		device->Barrier(barriers, arraysize(barriers), cmd);
 		device->UnbindUAVs(0, arraysize(uavs), cmd);
 	}
 	device->EventEnd(cmd);
 
 	device->EventBegin("BVH - Propagate AABB", cmd);
 	{
-		device->Barrier(&GPUBarrier::Memory(), 1, cmd);
+		GPUBarrier barriers[] = {
+			GPUBarrier::Memory()
+		};
+		device->Barrier(barriers, arraysize(barriers), cmd);
 
 		device->BindComputeShader(&computeShaders[CSTYPE_BVH_PROPAGATEAABB], cmd);
 		GPUResource* uavs[] = {
@@ -461,7 +469,7 @@ void wiGPUBVH::Build(const Scene& scene, CommandList cmd)
 
 		device->Dispatch((primitiveCount + BVH_BUILDER_GROUPSIZE - 1) / BVH_BUILDER_GROUPSIZE, 1, 1, cmd);
 
-		device->Barrier(&GPUBarrier::Memory(), 1, cmd);
+		device->Barrier(barriers, arraysize(barriers), cmd);
 		device->UnbindUAVs(0, arraysize(uavs), cmd);
 	}
 	device->EventEnd(cmd);
@@ -578,11 +586,20 @@ void wiGPUBVH::Clear()
 	sceneTextures.clear();
 }
 
-void wiGPUBVH::LoadShaders()
+namespace wiGPUBVH_Internal
 {
-	string SHADERPATH = wiRenderer::GetShaderPath();
+	void LoadShaders()
+	{
+		string SHADERPATH = wiRenderer::GetShaderPath();
 
-	wiRenderer::LoadShader(CS, computeShaders[CSTYPE_BVH_PRIMITIVES], "bvh_primitivesCS.cso");
-	wiRenderer::LoadShader(CS, computeShaders[CSTYPE_BVH_HIERARCHY], "bvh_hierarchyCS.cso");
-	wiRenderer::LoadShader(CS, computeShaders[CSTYPE_BVH_PROPAGATEAABB], "bvh_propagateaabbCS.cso");
+		wiRenderer::LoadShader(CS, computeShaders[CSTYPE_BVH_PRIMITIVES], "bvh_primitivesCS.cso");
+		wiRenderer::LoadShader(CS, computeShaders[CSTYPE_BVH_HIERARCHY], "bvh_hierarchyCS.cso");
+		wiRenderer::LoadShader(CS, computeShaders[CSTYPE_BVH_PROPAGATEAABB], "bvh_propagateaabbCS.cso");
+	}
+}
+
+void wiGPUBVH::Initialize()
+{
+	static wiEvent::Handle handle = wiEvent::Subscribe(SYSTEM_EVENT_RELOAD_SHADERS, [](uint64_t userdata) { wiGPUBVH_Internal::LoadShaders(); });
+	wiGPUBVH_Internal::LoadShaders();
 }

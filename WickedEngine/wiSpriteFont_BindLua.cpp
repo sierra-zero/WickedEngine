@@ -203,12 +203,14 @@ int wiSpriteFont_BindLua::GetAlign(lua_State* L)
 }
 int wiSpriteFont_BindLua::GetColor(lua_State* L)
 {
-	Luna<Vector_BindLua>::push(L, new Vector_BindLua(XMLoadFloat4(&font.params.color.toFloat4())));
+	XMFLOAT4 C = font.params.color.toFloat4();
+	Luna<Vector_BindLua>::push(L, new Vector_BindLua(XMLoadFloat4(&C)));
 	return 1;
 }
 int wiSpriteFont_BindLua::GetShadowColor(lua_State* L)
 {
-	Luna<Vector_BindLua>::push(L, new Vector_BindLua(XMLoadFloat4(&font.params.color.toFloat4())));
+	XMFLOAT4 C = font.params.color.toFloat4();
+	Luna<Vector_BindLua>::push(L, new Vector_BindLua(XMLoadFloat4(&C)));
 	return 1;
 }
 
@@ -218,13 +220,13 @@ void wiSpriteFont_BindLua::Bind()
 	if (!initialized)
 	{
 		initialized = true;
-		Luna<wiSpriteFont_BindLua>::Register(wiLua::GetGlobal()->GetLuaState());
+		Luna<wiSpriteFont_BindLua>::Register(wiLua::GetLuaState());
 
 
-		wiLua::GetGlobal()->RunText("WIFALIGN_LEFT = 0");
-		wiLua::GetGlobal()->RunText("WIFALIGN_CENTER = 1");
-		wiLua::GetGlobal()->RunText("WIFALIGN_RIGHT = 2");
-		wiLua::GetGlobal()->RunText("WIFALIGN_TOP = 3");
-		wiLua::GetGlobal()->RunText("WIFALIGN_BOTTOM = 4");
+		wiLua::RunText("WIFALIGN_LEFT = 0");
+		wiLua::RunText("WIFALIGN_CENTER = 1");
+		wiLua::RunText("WIFALIGN_RIGHT = 2");
+		wiLua::RunText("WIFALIGN_TOP = 3");
+		wiLua::RunText("WIFALIGN_BOTTOM = 4");
 	}
 }

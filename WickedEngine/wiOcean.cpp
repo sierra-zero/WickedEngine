@@ -4,6 +4,7 @@
 #include "ShaderInterop_Ocean.h"
 #include "wiScene.h"
 #include "wiBackLog.h"
+#include "wiEvent.h"
 
 #include <algorithm>
 #include <vector>
@@ -30,6 +31,39 @@ namespace wiOcean_Internal
 	PipelineState PSO, PSO_wire;
 
 	wiFFTGenerator::CSFFT512x512_Plan m_fft_plan;
+
+
+	void LoadShaders()
+	{
+
+		std::string path = wiRenderer::GetShaderPath();
+
+		wiRenderer::LoadShader(CS, updateSpectrumCS, "oceanSimulatorCS.cso");
+		wiRenderer::LoadShader(CS, updateDisplacementMapCS, "oceanUpdateDisplacementMapCS.cso");
+		wiRenderer::LoadShader(CS, updateGradientFoldingCS, "oceanUpdateGradientFoldingCS.cso");
+
+		wiRenderer::LoadShader(VS, oceanSurfVS, "oceanSurfaceVS.cso");
+
+		wiRenderer::LoadShader(PS, oceanSurfPS, "oceanSurfacePS.cso");
+		wiRenderer::LoadShader(PS, wireframePS, "oceanSurfaceSimplePS.cso");
+
+
+		GraphicsDevice* device = wiRenderer::GetDevice();
+
+		{
+			PipelineStateDesc desc;
+			desc.vs = &oceanSurfVS;
+			desc.ps = &oceanSurfPS;
+			desc.bs = &blendState;
+			desc.rs = &rasterizerState;
+			desc.dss = &depthStencilState;
+			device->CreatePipelineState(&desc, &PSO);
+
+			desc.ps = &wireframePS;
+			desc.rs = &wireRS;
+			device->CreatePipelineState(&desc, &PSO_wire);
+		}
+	}
 }
 using namespace wiOcean_Internal;
 
@@ -135,7 +169,7 @@ wiOcean::wiOcean(const WeatherComponent& weather)
 	tex_desc.ArraySize = 1;
 	tex_desc.SampleCount = 1;
 	tex_desc.Usage = USAGE_DEFAULT;
-	tex_desc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS | BIND_RENDER_TARGET;
+	tex_desc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
 	tex_desc.CPUAccessFlags = 0;
 
 	tex_desc.Format = FORMAT_R16G16B16A16_FLOAT;
@@ -233,7 +267,7 @@ void wiOcean::initHeightMap(const WeatherComponent& weather, XMFLOAT2* out_h0, f
 	}
 }
 
-void wiOcean::UpdateDisplacementMap(const WeatherComponent& weather, float time, CommandList cmd) const
+void wiOcean::UpdateDisplacementMap(const WeatherComponent& weather, CommandList cmd) const
 {
 	auto& params = weather.oceanParameters;
 
@@ -256,7 +290,7 @@ void wiOcean::UpdateDisplacementMap(const WeatherComponent& weather, float time,
 	device->BindUAVs(CS, cs0_uavs, 0, arraysize(cs0_uavs), cmd);
 
 	Ocean_Simulation_PerFrameCB perFrameData;
-	perFrameData.g_Time = time * params.time_scale;
+	perFrameData.g_TimeScale = params.time_scale;
 	perFrameData.g_ChoppyScale = params.choppy_scale;
 	perFrameData.g_GridLen = params.dmap_dim / params.patch_length;
 	device->UpdateBuffer(&perFrameCB, &perFrameData, cmd);
@@ -268,7 +302,10 @@ void wiOcean::UpdateDisplacementMap(const WeatherComponent& weather, float time,
 	uint32_t group_count_x = (params.dmap_dim + OCEAN_COMPUTE_TILESIZE - 1) / OCEAN_COMPUTE_TILESIZE;
 	uint32_t group_count_y = (params.dmap_dim + OCEAN_COMPUTE_TILESIZE - 1) / OCEAN_COMPUTE_TILESIZE;
 	device->Dispatch(group_count_x, group_count_y, 1, cmd);
-	device->Barrier(&GPUBarrier::Memory(), 1, cmd);
+	GPUBarrier barriers[] = {
+		GPUBarrier::Memory(),
+	};
+	device->Barrier(barriers, arraysize(barriers), cmd);
 
 	device->UnbindUAVs(0, 1, cmd);
 	device->UnbindResources(TEXSLOT_ONDEMAND0, 2, cmd);
@@ -290,7 +327,7 @@ void wiOcean::UpdateDisplacementMap(const WeatherComponent& weather, float time,
 	const GPUResource* cs_srvs[1] = { &buffer_Float_Dxyz };
 	device->BindResources(CS, cs_srvs, TEXSLOT_ONDEMAND0, 1, cmd);
 	device->Dispatch(params.dmap_dim / OCEAN_COMPUTE_TILESIZE, params.dmap_dim / OCEAN_COMPUTE_TILESIZE, 1, cmd);
-	device->Barrier(&GPUBarrier::Memory(), 1, cmd);
+	device->Barrier(barriers, arraysize(barriers), cmd);
 
 	// Update gradient map:
 	device->BindComputeShader(&updateGradientFoldingCS, cmd);
@@ -299,7 +336,7 @@ void wiOcean::UpdateDisplacementMap(const WeatherComponent& weather, float time,
 	cs_srvs[0] = &displacementMap;
 	device->BindResources(CS, cs_srvs, TEXSLOT_ONDEMAND0, 1, cmd);
 	device->Dispatch(params.dmap_dim / OCEAN_COMPUTE_TILESIZE, params.dmap_dim / OCEAN_COMPUTE_TILESIZE, 1, cmd);
-	device->Barrier(&GPUBarrier::Memory(), 1, cmd);
+	device->Barrier(barriers, arraysize(barriers), cmd);
 
 	// Unbind
 	device->UnbindUAVs(0, 1, cmd);
@@ -312,7 +349,7 @@ void wiOcean::UpdateDisplacementMap(const WeatherComponent& weather, float time,
 }
 
 
-void wiOcean::Render(const CameraComponent& camera, const WeatherComponent& weather, float time, CommandList cmd) const
+void wiOcean::Render(const CameraComponent& camera, const WeatherComponent& weather, CommandList cmd) const
 {
 	auto& params = weather.oceanParameters;
 
@@ -349,45 +386,13 @@ void wiOcean::Render(const CameraComponent& camera, const WeatherComponent& weat
 	device->BindConstantBuffer(PS, &shadingCB, CB_GETBINDSLOT(Ocean_RenderCB), cmd);
 
 	device->BindResource(VS, &displacementMap, TEXSLOT_ONDEMAND0, cmd);
-	device->BindResource(PS, &gradientMap, TEXSLOT_ONDEMAND0, cmd);
+	device->BindResource(PS, &gradientMap, TEXSLOT_ONDEMAND1, cmd);
 
 	device->Draw(dim.x*dim.y*6, 0, cmd);
 
 	device->EventEnd(cmd);
 }
 
-
-void wiOcean::LoadShaders()
-{
-
-	std::string path = wiRenderer::GetShaderPath();
-
-	wiRenderer::LoadShader(CS, updateSpectrumCS, "oceanSimulatorCS.cso");
-	wiRenderer::LoadShader(CS, updateDisplacementMapCS, "oceanUpdateDisplacementMapCS.cso");
-	wiRenderer::LoadShader(CS, updateGradientFoldingCS, "oceanUpdateGradientFoldingCS.cso");
-
-	wiRenderer::LoadShader(VS, oceanSurfVS, "oceanSurfaceVS.cso");
-
-	wiRenderer::LoadShader(PS, oceanSurfPS, "oceanSurfacePS.cso");
-	wiRenderer::LoadShader(PS, wireframePS, "oceanSurfaceSimplePS.cso");
-
-
-	GraphicsDevice* device = wiRenderer::GetDevice();
-
-	{
-		PipelineStateDesc desc;
-		desc.vs = &oceanSurfVS;
-		desc.ps = &oceanSurfPS;
-		desc.bs = &blendState;
-		desc.rs = &rasterizerState;
-		desc.dss = &depthStencilState;
-		device->CreatePipelineState(&desc, &PSO);
-
-		desc.ps = &wireframePS;
-		desc.rs = &wireRS;
-		device->CreatePipelineState(&desc, &PSO_wire);
-	}
-}
 
 void wiOcean::Initialize()
 {
@@ -403,7 +408,7 @@ void wiOcean::Initialize()
 	device->CreateBuffer(&cb_desc, nullptr, &shadingCB);
 
 
-	RasterizerStateDesc ras_desc;
+	RasterizerState ras_desc;
 	ras_desc.FillMode = FILL_SOLID;
 	ras_desc.CullMode = CULL_NONE;
 	ras_desc.FrontCounterClockwise = false;
@@ -414,22 +419,21 @@ void wiOcean::Initialize()
 	ras_desc.MultisampleEnable = true;
 	ras_desc.AntialiasedLineEnable = false;
 
-	device->CreateRasterizerState(&ras_desc, &rasterizerState);
+	rasterizerState = ras_desc;
 
 	ras_desc.FillMode = FILL_WIREFRAME;
+	wireRS = ras_desc;
 
-	device->CreateRasterizerState(&ras_desc, &wireRS);
-
-	DepthStencilStateDesc depth_desc;
-	memset(&depth_desc, 0, sizeof(DepthStencilStateDesc));
+	DepthStencilState depth_desc;
+	memset(&depth_desc, 0, sizeof(DepthStencilState));
 	depth_desc.DepthEnable = true;
 	depth_desc.DepthWriteMask = DEPTH_WRITE_MASK_ALL;
 	depth_desc.DepthFunc = COMPARISON_GREATER;
 	depth_desc.StencilEnable = false;
-	device->CreateDepthStencilState(&depth_desc, &depthStencilState);
+	depthStencilState = depth_desc;
 
-	BlendStateDesc blend_desc;
-	memset(&blend_desc, 0, sizeof(BlendStateDesc));
+	BlendState blend_desc;
+	memset(&blend_desc, 0, sizeof(BlendState));
 	blend_desc.AlphaToCoverageEnable = false;
 	blend_desc.IndependentBlendEnable = false;
 	blend_desc.RenderTarget[0].BlendEnable = true;
@@ -440,8 +444,10 @@ void wiOcean::Initialize()
 	blend_desc.RenderTarget[0].DestBlendAlpha = BLEND_ZERO;
 	blend_desc.RenderTarget[0].BlendOpAlpha = BLEND_OP_ADD;
 	blend_desc.RenderTarget[0].RenderTargetWriteMask = COLOR_WRITE_ENABLE_ALL;
-	device->CreateBlendState(&blend_desc, &blendState);
+	blendState = blend_desc;
 
+
+	static wiEvent::Handle handle = wiEvent::Subscribe(SYSTEM_EVENT_RELOAD_SHADERS, [](uint64_t userdata) { LoadShaders(); wiFFTGenerator::LoadShaders(); });
 
 	LoadShaders();
 	wiFFTGenerator::LoadShaders();

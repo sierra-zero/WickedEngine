@@ -1,39 +1,42 @@
 #include "globals.hlsli"
 #include "ShaderInterop_Postprocess.h"
 
+#ifdef BINDLESS
+PUSHCONSTANT(push, PushConstantsTonemap);
+Texture2D<float4> bindless_textures[] : register(t0, space1);
+Texture3D<float4> bindless_textures3D[] : register(t0, space2);
+RWTexture2D<float4> bindless_rwtextures[] : register(u0, space3);
+#else
 TEXTURE2D(input, float4, TEXSLOT_ONDEMAND0);
 TEXTURE2D(input_luminance, float, TEXSLOT_ONDEMAND1);
 TEXTURE2D(input_distortion, float4, TEXSLOT_ONDEMAND2);
-TEXTURE2D(colorgrade_lookuptable, float4, TEXSLOT_ONDEMAND3);
+TEXTURE3D(colorgrade_lookuptable, float4, TEXSLOT_ONDEMAND3);
 
 RWTEXTURE2D(output, unorm float4, 0);
-
-float4 sampleAs3DTexture(in float3 uv, in float width)
-{
-	float sliceSize = 1.0 / width;              // space of 1 slice
-	float slicePixelSize = sliceSize / width;           // space of 1 pixel
-	float sliceInnerSize = slicePixelSize * (width - 1.0);  // space of width pixels
-	float zSlice0 = min(floor(uv.z * width), width - 1.0);
-	float zSlice1 = min(zSlice0 + 1.0, width - 1.0);
-	float xOffset = slicePixelSize * 0.5 + uv.x * sliceInnerSize;
-	float s0 = xOffset + (zSlice0 * sliceSize);
-	float s1 = xOffset + (zSlice1 * sliceSize);
-	float4 slice0Color = colorgrade_lookuptable.SampleLevel(sampler_linear_clamp, float2(s0, uv.y), 0);
-	float4 slice1Color = colorgrade_lookuptable.SampleLevel(sampler_linear_clamp, float2(s1, uv.y), 0);
-	float zOffset = (uv.z * width) % 1.0;
-	float4 result = lerp(slice0Color, slice1Color, zOffset);
-	return result;
-}
+#endif // BINDLESS
 
 [numthreads(POSTPROCESS_BLOCKSIZE, POSTPROCESS_BLOCKSIZE, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
+#ifdef BINDLESS
+	const float2 uv = (DTid.xy + 0.5f) * push.xPPResolution_rcp;
+	const float exposure = push.exposure;
+	const bool is_dither = push.dither != 0;
+	const bool is_colorgrading = push.colorgrading != 0;
+
+	const float2 distortion = bindless_textures[push.texture_input_distortion].SampleLevel(sampler_linear_clamp, uv, 0).rg;
+	float4 hdr = bindless_textures[push.texture_input].SampleLevel(sampler_linear_clamp, uv + distortion, 0);
+	float average_luminance = bindless_textures[push.texture_input_luminance][uint2(0, 0)].r;
+#else
 	const float2 uv = (DTid.xy + 0.5f) * xPPResolution_rcp;
-	const float exposure = xPPParams0.x;
+	const float exposure = tonemap_exposure;
+	const bool is_dither = tonemap_dither != 0;
+	const bool is_colorgrading = tonemap_colorgrading != 0;
 
 	const float2 distortion = input_distortion.SampleLevel(sampler_linear_clamp, uv, 0).rg;
 	float4 hdr = input.SampleLevel(sampler_linear_clamp, uv + distortion, 0);
 	float average_luminance = input_luminance[uint2(0, 0)].r;
+#endif // BINDLESS
 
 	hdr.rgb *= exposure;
 
@@ -45,18 +48,24 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 	ldr.rgb = GAMMA(ldr.rgb);
 
-	if (tonemap_colorgrading)
+	if (is_colorgrading)
 	{
-		float2 dim;
-		colorgrade_lookuptable.GetDimensions(dim.x, dim.y);
-		ldr.rgb = sampleAs3DTexture(ldr.rgb, dim.y).rgb;
+#ifdef BINDLESS
+		ldr.rgb = bindless_textures3D[push.texture_colorgrade_lookuptable].SampleLevel(sampler_linear_clamp, ldr.rgb, 0).rgb;
+#else
+		ldr.rgb = colorgrade_lookuptable.SampleLevel(sampler_linear_clamp, ldr.rgb, 0).rgb;
+#endif // BINDLESS
 	}
 
-	if (tonemap_dither)
+	if (is_dither)
 	{
 		// dithering before outputting to SDR will reduce color banding:
 		ldr.rgb += (dither((float2)DTid.xy) - 0.5f) / 64.0f;
 	}
 
+#ifdef BINDLESS
+	bindless_rwtextures[push.texture_output][DTid.xy] = ldr;
+#else
 	output[DTid.xy] = ldr;
+#endif // BINDLESS
 }

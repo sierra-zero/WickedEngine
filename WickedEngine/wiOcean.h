@@ -11,14 +11,13 @@ class wiOcean
 public:
 	wiOcean(const wiScene::WeatherComponent& weather);
 
-	void UpdateDisplacementMap(const wiScene::WeatherComponent& weather, float time, wiGraphics::CommandList cmd) const;
-	void Render(const wiScene::CameraComponent& camera, const wiScene::WeatherComponent& weather, float time, wiGraphics::CommandList cmd) const;
+	void UpdateDisplacementMap(const wiScene::WeatherComponent& weather, wiGraphics::CommandList cmd) const;
+	void Render(const wiScene::CameraComponent& camera, const wiScene::WeatherComponent& weather, wiGraphics::CommandList cmd) const;
 
 	const wiGraphics::Texture* getDisplacementMap() const;
 	const wiGraphics::Texture* getGradientMap() const;
 
 	static void Initialize();
-	static void LoadShaders();
 
 protected:
 	wiGraphics::Texture displacementMap;		// (RGBA32F)

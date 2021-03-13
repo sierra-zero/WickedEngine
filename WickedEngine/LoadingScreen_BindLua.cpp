@@ -19,9 +19,6 @@ Luna<LoadingScreen_BindLua>::FunctionType LoadingScreen_BindLua::methods[] = {
 	lunamethod(RenderPath2D_BindLua, SetSpriteOrder),
 	lunamethod(RenderPath2D_BindLua, SetFontOrder),
 
-	lunamethod(LoadingScreen_BindLua, Initialize),
-	lunamethod(RenderPath_BindLua, OnStart),
-	lunamethod(RenderPath_BindLua, OnStop),
 	lunamethod(RenderPath_BindLua, GetLayerMask),
 	lunamethod(RenderPath_BindLua, SetLayerMask),
 
@@ -42,7 +39,9 @@ int LoadingScreen_BindLua::AddLoadingTask(lua_State* L)
 		LoadingScreen* loading = dynamic_cast<LoadingScreen*>(component);
 		if (loading != nullptr)
 		{
-			loading->addLoadingFunction(bind(&wiLua::RunText,wiLua::GetGlobal(),task));
+			loading->addLoadingFunction([=](wiJobArgs args) {
+				wiLua::RunText(task);
+				});
 		}
 		else
 			wiLua::SError(L, "AddLoader(string taskScript) component is not a LoadingScreen!");
@@ -60,7 +59,9 @@ int LoadingScreen_BindLua::OnFinished(lua_State* L)
 		LoadingScreen* loading = dynamic_cast<LoadingScreen*>(component);
 		if (loading != nullptr)
 		{
-			loading->onFinished(bind(&wiLua::RunText, wiLua::GetGlobal(), task));
+			loading->onFinished([=] {
+				wiLua::RunText(task);
+				});
 		}
 		else
 			wiLua::SError(L, "OnFinished(string taskScript) component is not a LoadingScreen!");
@@ -76,6 +77,6 @@ void LoadingScreen_BindLua::Bind()
 	if (!initialized)
 	{
 		initialized = true;
-		Luna<LoadingScreen_BindLua>::Register(wiLua::GetGlobal()->GetLuaState());
+		Luna<LoadingScreen_BindLua>::Register(wiLua::GetLuaState());
 	}
 }
